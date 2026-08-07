@@ -47,6 +47,11 @@ class GameError(Exception):
 class ChessGame:
     def __init__(self, engine_move_time=DEFAULT_ENGINE_MOVE_TIME):
         self._lock = threading.RLock()
+        # Condition shares the same lock, so mutating state and notifying
+        # waiters can happen atomically inside the `with self._lock:`
+        # blocks below — no separate locking dance needed.
+        self._change_cond = threading.Condition(self._lock)
+        self._version = 0  # bumped on every state-changing operation
         self._engine = None
         self._engine_move_time = engine_move_time
 
@@ -108,9 +113,17 @@ class ChessGame:
             if self._current_player_type() == "engine":
                 engine_move = self._play_engine_move_locked()
 
+            self._bump_version_locked()
             return self.state(), engine_move
 
     # ---- internal helpers -------------------------------------------------
+
+    def _bump_version_locked(self):
+        """Caller must hold self._lock. Marks the state as changed and
+        wakes anyone blocked in wait_for_change() (used by the SSE stream
+        the viewer listens on)."""
+        self._version += 1
+        self._change_cond.notify_all()
 
     def _current_player_type(self):
         return self.white_type if self.board.turn == chess.WHITE else self.black_type
@@ -213,6 +226,21 @@ class ChessGame:
         with self._lock:
             return self.started
 
+    def wait_for_change(self, since_version, timeout=25):
+        """Block until the game state has changed since `since_version`
+        (or `timeout` seconds elapse), then return (state_dict, version).
+
+        Pass `since_version=-1` (or any value that can't match a real
+        version) to get the current state back immediately on first call.
+        Used by the SSE stream in viewer.py so it can push updates the
+        instant a move happens, rather than polling on a fixed interval.
+        """
+        with self._lock:
+            if since_version != self._version:
+                return self.state(), self._version
+            self._change_cond.wait(timeout)
+            return self.state(), self._version
+
     def state(self):
         with self._lock:
             board = self.board
@@ -280,6 +308,7 @@ class ChessGame:
             if self._status() == "in_progress" and self._current_player_type() == "engine":
                 engine_entry = self._play_engine_move_locked()
 
+            self._bump_version_locked()
             return player_entry, engine_entry
 
     def resign(self, player):
@@ -293,4 +322,5 @@ class ChessGame:
                 raise GameError(f"game is not in progress (status: {self._status()})")
             self.result_reason = "resigned"
             self.resigned_by = player
+            self._bump_version_locked()
             return self.state()

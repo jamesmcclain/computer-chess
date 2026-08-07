@@ -110,11 +110,17 @@ Ends the game; the other side is recorded as the winner.
 
 ## Board viewer (port 5004)
 
-`GET /` — an auto-refreshing, view-only HTML page showing the current
-board. No inputs; it cannot be used to submit moves. Pieces render from
-`/static/pieces/<code>.png` (e.g. `wN.png`, `bK.png`) if present, falling
-back to Unicode chess glyphs otherwise — see `static/pieces/README.md` to
-drop in your own piece art later, no code changes required.
+`GET /` — a view-only HTML page showing the current board, updated live.
+No inputs; it cannot be used to submit moves. Updates are pushed to the
+browser over Server-Sent Events (`GET /events`) the instant the game
+changes, rather than polled on a timer — the page holds one open
+connection and only repaints the squares that actually changed, so
+there's no periodic flash/reload. (`GET /state` is also available for a
+one-off fetch, and is used as an automatic fallback if SSE isn't
+available.) Pieces render from `/static/pieces/<code>.png` (e.g.
+`wN.png`, `bK.png`) if present, falling back to Unicode chess glyphs
+otherwise — see `static/pieces/README.md` to drop in your own piece art
+later, no code changes required.
 
 ## How it works
 
