@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "tile_size": [256, 256],
+  "notes": "Full-bleed board square textures. Pair dark+light from the same set when tiling an 8x8 board. Paths are relative to this catalogue file.",
+  "sets": [
+    {
+      "id": "ebony_ivory",
+      "label": "Ebony / Ivory",
+      "theme": "classic organic luxury",
+      "dark": {
+        "path": "square_ebony.png",
+        "role": "dark",
+        "material": "ebony",
+        "read": "Deep black-brown polished hardwood with strong vertical grain; dense, almost charcoal in the shadows, warm brown highlights in the figure. Reads as a traditional dark chess square."
+      },
+      "light": {
+        "path": "square_ivory.png",
+        "role": "light",
+        "material": "ivory",
+        "read": "Cream off-white bone ivory with soft natural growth lines and gentle mottling. Warm, not pure white; pairs with ebony for high classic contrast."
+      }
+    },
+    {
+      "id": "mahogany_ash",
+      "label": "Mahogany / Ash",
+      "theme": "warm hardwood",
+      "dark": {
+        "path": "square_mahogany.png",
+        "role": "dark",
+        "material": "mahogany",
+        "read": "Rich reddish-brown polished mahogany, lively open grain and ribbon figure. Warmer and lighter than ebony; board contrast is softer and more inviting."
+      },
+      "light": {
+        "path": "square_ash.png",
+        "role": "light",
+        "material": "ash",
+        "read": "Pale blonde ash timber with fine straight grain. Very light cream-tan, almost blond maple; clean bright square against mahogany."
+      }
+    },
+    {
+      "id": "metal",
+      "label": "Brushed Metal",
+      "theme": "industrial metal",
+      "dark": {
+        "path": "square_metal_dark.png",
+        "role": "dark",
+        "material": "brushed gunmetal steel",
+        "read": "Dark gunmetal brushed steel, soft anisotropic horizontal scratch grain, cool neutral gray-black. Matte-satin metal, no sharp specular hotspots."
+      },
+      "light": {
+        "path": "square_metal_light.png",
+        "role": "light",
+        "material": "brushed silver aluminum",
+        "read": "Pale silver brushed aluminum with matching horizontal brush texture. Cool light gray, pairs with the gunmetal tile as a monochrome metal board."
+      }
+    },
+    {
+      "id": "cyberpunk",
+      "label": "Cyberpunk",
+      "theme": "neon tech / sci-fi",
+      "dark": {
+        "path": "square_cyberpunk_dark.png",
+        "role": "dark",
+        "material": "matte black tech panel with neon circuits",
+        "read": "Matte black carbon-tech plate overlaid with glowing magenta and electric cyan circuit traces and a faint micro-grid. Strong neon punch; the dark square of a Sprawl-side board."
+      },
+      "light": {
+        "path": "square_cyberpunk_light.png",
+        "role": "light",
+        "material": "frosted pale tech acrylic with iridescent filigree",
+        "read": "Frosted pale gray-white tech acrylic with soft pink and cyan circuit filigree and a light holographic sheen. Brighter, gentler twin to the dark cyberpunk panel."
+      }
+    }
+  ]
+}

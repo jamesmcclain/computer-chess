@@ -150,10 +150,33 @@ changes, rather than polled on a timer — the page holds one open
 connection and only repaints the squares that actually changed, so
 there's no periodic flash/reload. (`GET /state` is also available for a
 one-off fetch, and is used as an automatic fallback if SSE isn't
-available.) Pieces render from `/static/pieces/<code>.png` (e.g.
-`wN.png`, `bK.png`) if present, falling back to Unicode chess glyphs
-otherwise — see `static/pieces/README.md` to drop in your own piece art
-later, no code changes required.
+available.)
+
+**Appearance.** The page has on-page controls for:
+
+- **Board style** — either one "Matched" square set (a designer-paired
+  dark+light texture, e.g. Ebony/Ivory) or "Split" mode, choosing the
+  dark and light squares independently from all available textures.
+- **Piece style** — either one "Matched" set for both sides, or "Split"
+  mode with a different set for White and a different set for Black.
+
+Options come from `GET /api/catalogue`, which is generated from
+`static/chess/boards/squares_catalogue.json` and
+`static/chess/pieces/pieces_catalogue.json` — see `static/README.md`.
+Each person's choice is remembered in their own browser (`localStorage`);
+it's a display preference, not game state, so two people watching the
+same game can see it differently. If a piece image (or the whole
+`static/chess/` catalogue) is missing, the viewer falls back to Unicode
+chess glyphs on a flat light/dark background, so it still works with
+nothing but this repo's own game logic.
+
+The board itself is sized in JS (a `ResizeObserver` on its container)
+to the largest square that fits the browser window, so it scales
+continuously as the window is resized rather than jumping between a
+few fixed breakpoints; it's kept on its own GPU-composited layer
+(`will-change` + a null 3D transform) so that resizing stays smooth
+without needing a full WebGL/three.js setup for what's fundamentally a
+flat 2D grid of images.
 
 ## How it works
 
@@ -173,6 +196,6 @@ run.sh          Host-side build-and-run convenience script
 server.py       Entry point: starts the API (5003) and viewer (5004)
 game.py         Game state, rules, and GNU Chess (UCI) integration
 api.py          REST API routes
-viewer.py       Read-only board viewer routes + page
-static/pieces/  Drop piece images here later (see its README.md)
+viewer.py       Read-only board viewer routes, page, and appearance catalogue
+static/chess/   Board-square and piece-set art the viewer offers (see its README.md)
 ```

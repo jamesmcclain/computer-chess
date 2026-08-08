@@ -34,9 +34,10 @@ WORKDIR /app
 COPY server.py game.py api.py viewer.py /app/
 COPY static/ /app/static/
 
-# Board viewer pieces live here; drop in wP.png, wN.png, ... bK.png (see
-# static/pieces/README.md) to replace the built-in Unicode glyph fallback.
-RUN mkdir -p /app/static/pieces
+# Board-square and piece-set art the viewer's appearance controls read
+# from (see static/README.md). If this ends up empty, the viewer just
+# falls back to flat colors and Unicode chess glyphs.
+RUN mkdir -p /app/static/chess/boards /app/static/chess/pieces
 
 EXPOSE 5003 5004
 

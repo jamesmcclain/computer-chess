@@ -1,0 +1,386 @@
+{
+  "version": 1,
+  "tile_size": [
+    256,
+    256
+  ],
+  "notes": "Finished piece images ready to place on a board. Each piece sits on a clear background so the board shows through. Paths are relative to this catalogue file. Layout: <color>/<material>/<color>_<type>.png. A material set is complete when it has all six types for both colors.",
+  "piece_types": [
+    "king",
+    "queen",
+    "rook",
+    "bishop",
+    "knight",
+    "pawn"
+  ],
+  "colors": [
+    "black",
+    "white"
+  ],
+  "sets": [
+    {
+      "id": "playdough",
+      "label": "Playdough",
+      "theme": "soft matte modeling clay, handmade Staunton",
+      "material": "playdough",
+      "view": "isometric 3/4",
+      "read": "Matte modeling-clay army with rounded edges and a soft handmade surface. Black side is dark gray dough. White side is off-white cream dough. Silhouettes follow classic Staunton cues so each type stays readable on a board.",
+      "pieces": {
+        "black": {
+          "king": {
+            "path": "black/playdough/black_king.png",
+            "type": "king",
+            "color": "black",
+            "read": "Dark gray clay king with stacked body rings, coronet, and a clear cross finial. Soft matte surface; the reference piece for this material set."
+          },
+          "queen": {
+            "path": "black/playdough/black_queen.png",
+            "type": "queen",
+            "color": "black",
+            "read": "Dark gray clay queen with coronet crown and ball finial on a ringed Staunton body."
+          },
+          "rook": {
+            "path": "black/playdough/black_rook.png",
+            "type": "rook",
+            "color": "black",
+            "read": "Dark gray clay rook with crenellated battlement top and a wide base."
+          },
+          "bishop": {
+            "path": "black/playdough/black_bishop.png",
+            "type": "bishop",
+            "color": "black",
+            "read": "Dark gray clay bishop with mitre top, diagonal slit, and ball finial."
+          },
+          "knight": {
+            "path": "black/playdough/black_knight.png",
+            "type": "knight",
+            "color": "black",
+            "read": "Dark gray clay knight as a rounded horse head on a pedestal base, facing roughly to the right."
+          },
+          "pawn": {
+            "path": "black/playdough/black_pawn.png",
+            "type": "pawn",
+            "color": "black",
+            "read": "Dark gray clay pawn with ball head, simple collar ring, and wide base."
+          }
+        },
+        "white": {
+          "king": {
+            "path": "white/playdough/white_king.png",
+            "type": "king",
+            "color": "white",
+            "read": "Off-white cream clay king with coronet and cross finial; light twin of the black king."
+          },
+          "queen": {
+            "path": "white/playdough/white_queen.png",
+            "type": "queen",
+            "color": "white",
+            "read": "Off-white clay queen with coronet and ball finial on a ringed body."
+          },
+          "rook": {
+            "path": "white/playdough/white_rook.png",
+            "type": "rook",
+            "color": "white",
+            "read": "Off-white clay rook with clear battlements and a wide base."
+          },
+          "bishop": {
+            "path": "white/playdough/white_bishop.png",
+            "type": "bishop",
+            "color": "white",
+            "read": "Off-white clay bishop with mitre, diagonal slit, and ball finial."
+          },
+          "knight": {
+            "path": "white/playdough/white_knight.png",
+            "type": "knight",
+            "color": "white",
+            "read": "Off-white clay knight horse head on a pedestal base."
+          },
+          "pawn": {
+            "path": "white/playdough/white_pawn.png",
+            "type": "pawn",
+            "color": "white",
+            "read": "Off-white clay pawn with ball head and simple collar."
+          }
+        }
+      }
+    },
+    {
+      "id": "robotech",
+      "label": "Robotech Anime",
+      "theme": "mecha anime cel-shaded Staunton",
+      "material": "robotech",
+      "view": "orthographic side",
+      "read": "Hard-edged anime chess army with cel shading and a Robotech mecha flavor. Black side is dark charcoal armor. White side is pale white and light gray armor. Silhouettes stay classic Staunton so each type reads clearly on a board. The knight leans more mechanical than the other pieces.",
+      "pieces": {
+        "black": {
+          "king": {
+            "path": "black/robotech/black_king.png",
+            "type": "king",
+            "color": "black",
+            "read": "Dark charcoal anime king with coronet and cross finial, smooth cel-shaded armor panels."
+          },
+          "queen": {
+            "path": "black/robotech/black_queen.png",
+            "type": "queen",
+            "color": "black",
+            "read": "Dark charcoal anime queen with coronet crown and ball finial on a tall Staunton body."
+          },
+          "rook": {
+            "path": "black/robotech/black_rook.png",
+            "type": "rook",
+            "color": "black",
+            "read": "Dark charcoal anime rook tower with crenellated top and a wide armored base."
+          },
+          "bishop": {
+            "path": "black/robotech/black_bishop.png",
+            "type": "bishop",
+            "color": "black",
+            "read": "Dark charcoal anime bishop with mitre, diagonal slit, and ball finial."
+          },
+          "knight": {
+            "path": "black/robotech/black_knight.png",
+            "type": "knight",
+            "color": "black",
+            "read": "Dark mecha horse-head knight with segmented armor plates and a glowing green eye accent."
+          },
+          "pawn": {
+            "path": "black/robotech/black_pawn.png",
+            "type": "pawn",
+            "color": "black",
+            "read": "Dark charcoal anime pawn with ball head, simple collar, and wide base."
+          }
+        },
+        "white": {
+          "king": {
+            "path": "white/robotech/white_king.png",
+            "type": "king",
+            "color": "white",
+            "read": "Pale white anime king with coronet and cross finial; light twin of the black king."
+          },
+          "queen": {
+            "path": "white/robotech/white_queen.png",
+            "type": "queen",
+            "color": "white",
+            "read": "Pale white anime queen with coronet and ball finial."
+          },
+          "rook": {
+            "path": "white/robotech/white_rook.png",
+            "type": "rook",
+            "color": "white",
+            "read": "Pale white anime rook with clear battlements and a wide base."
+          },
+          "bishop": {
+            "path": "white/robotech/white_bishop.png",
+            "type": "bishop",
+            "color": "white",
+            "read": "Pale white anime bishop with mitre, diagonal slit, and ball finial."
+          },
+          "knight": {
+            "path": "white/robotech/white_knight.png",
+            "type": "knight",
+            "color": "white",
+            "read": "Pale mecha horse-head knight with segmented armor plates on a pedestal base."
+          },
+          "pawn": {
+            "path": "white/robotech/white_pawn.png",
+            "type": "pawn",
+            "color": "white",
+            "read": "Pale white anime pawn with ball head and simple collar."
+          }
+        }
+      }
+    },
+    {
+      "id": "cyberpunk_bobblehead",
+      "label": "Cyberpunk Bobblehead",
+      "theme": "photoreal cyberpunk toy bobbleheads with painted faces",
+      "material": "cyberpunk_bobblehead",
+      "view": "front facing camera",
+      "read": "Photoreal toy army with oversized bobble heads and painted faces that look at the camera. Black side is dark glossy metal with simple white eyes. White side is pearl plastic with softer eyes, blush, and magenta rim light. Tops keep classic Staunton cues for type. Full figure stays inside the frame with clear margin.",
+      "pieces": {
+        "black": {
+          "king": {
+            "path": "black/cyberpunk_bobblehead/black_king.png",
+            "type": "king",
+            "color": "black",
+            "read": "Dark metal bobblehead king, camera-facing painted eyes and smile, crown with cross, full base in frame."
+          },
+          "queen": {
+            "path": "black/cyberpunk_bobblehead/black_queen.png",
+            "type": "queen",
+            "color": "black",
+            "read": "Dark metal bobblehead queen with coronet and ball finial, painted face toward the camera."
+          },
+          "rook": {
+            "path": "black/cyberpunk_bobblehead/black_rook.png",
+            "type": "rook",
+            "color": "black",
+            "read": "Dark metal bobblehead rook with crenellated turret on top of the head and a big painted smile."
+          },
+          "bishop": {
+            "path": "black/cyberpunk_bobblehead/black_bishop.png",
+            "type": "bishop",
+            "color": "black",
+            "read": "Dark metal bobblehead bishop with mitre top and ball tip, painted face on the sphere."
+          },
+          "knight": {
+            "path": "black/cyberpunk_bobblehead/black_knight.png",
+            "type": "knight",
+            "color": "black",
+            "read": "Dark metal Staunton horse-head knight with a soft painted eye and cyan rim light."
+          },
+          "pawn": {
+            "path": "black/cyberpunk_bobblehead/black_pawn.png",
+            "type": "pawn",
+            "color": "black",
+            "read": "Dark metal bobblehead pawn, ball head with painted eyes and smile, simple collar and base."
+          }
+        },
+        "white": {
+          "king": {
+            "path": "white/cyberpunk_bobblehead/white_king.png",
+            "type": "king",
+            "color": "white",
+            "read": "Pearl bobblehead king, camera-facing eyes blush and smile, crown with cross, magenta rim light."
+          },
+          "queen": {
+            "path": "white/cyberpunk_bobblehead/white_queen.png",
+            "type": "queen",
+            "color": "white",
+            "read": "Pearl bobblehead queen with coronet and ball finial, soft painted face toward the camera."
+          },
+          "rook": {
+            "path": "white/cyberpunk_bobblehead/white_rook.png",
+            "type": "rook",
+            "color": "white",
+            "read": "Pearl bobblehead rook with battlements on top and a large painted face on the sphere."
+          },
+          "bishop": {
+            "path": "white/cyberpunk_bobblehead/white_bishop.png",
+            "type": "bishop",
+            "color": "white",
+            "read": "Pearl bobblehead bishop with mitre and ball tip, painted face on the body sphere."
+          },
+          "knight": {
+            "path": "white/cyberpunk_bobblehead/white_knight.png",
+            "type": "knight",
+            "color": "white",
+            "read": "Pearl Staunton horse-head knight with a painted eye and magenta rim light."
+          },
+          "pawn": {
+            "path": "white/cyberpunk_bobblehead/white_pawn.png",
+            "type": "pawn",
+            "color": "white",
+            "read": "Pearl bobblehead pawn with painted face, simple collar, and wide base."
+          }
+        }
+      }
+    },
+    {
+      "id": "african_fauna",
+      "label": "African Fauna",
+      "theme": "cartoon African animals as Staunton chess pieces",
+      "material": "african_fauna",
+      "view": "front facing camera",
+      "read": "Cute cartoon African animals on classic chess bodies. Black side uses charcoal and gold split paint. White side uses cream ivory. Each type is a different animal: king lion, queen lioness, rook giraffe, bishop elephant, knight zebra, pawn meerkat. Faces look at the camera. Full figure stays in frame.",
+      "fauna_map": {
+        "king": "lion",
+        "queen": "lioness",
+        "rook": "giraffe",
+        "bishop": "elephant",
+        "knight": "zebra",
+        "pawn": "meerkat"
+      },
+      "pieces": {
+        "black": {
+          "king": {
+            "path": "black/african_fauna/black_king.png",
+            "type": "king",
+            "color": "black",
+            "animal": "lion",
+            "read": "Cartoon lion king with dark mane, crown and cross, charcoal-and-gold body."
+          },
+          "queen": {
+            "path": "black/african_fauna/black_queen.png",
+            "type": "queen",
+            "color": "black",
+            "animal": "lioness",
+            "read": "Cartoon lioness queen with coronet and ball finial, no heavy mane, split dark body."
+          },
+          "rook": {
+            "path": "black/african_fauna/black_rook.png",
+            "type": "rook",
+            "color": "black",
+            "animal": "giraffe",
+            "read": "Cartoon giraffe rook with ossicones and spotted neck on a tall chess body."
+          },
+          "bishop": {
+            "path": "black/african_fauna/black_bishop.png",
+            "type": "bishop",
+            "color": "black",
+            "animal": "elephant",
+            "read": "Cartoon elephant bishop with ears, trunk, small tusks, and a mitre-like cap."
+          },
+          "knight": {
+            "path": "black/african_fauna/black_knight.png",
+            "type": "knight",
+            "color": "black",
+            "animal": "zebra",
+            "read": "Cartoon zebra knight in horse-head pose with bold stripes and dark base."
+          },
+          "pawn": {
+            "path": "black/african_fauna/black_pawn.png",
+            "type": "pawn",
+            "color": "black",
+            "animal": "meerkat",
+            "read": "Cartoon meerkat pawn standing on a dark pedestal with a simple collar ring."
+          }
+        },
+        "white": {
+          "king": {
+            "path": "white/african_fauna/white_king.png",
+            "type": "king",
+            "color": "white",
+            "animal": "lion",
+            "read": "Cartoon lion king with warm mane, crown and cross, cream ivory body."
+          },
+          "queen": {
+            "path": "white/african_fauna/white_queen.png",
+            "type": "queen",
+            "color": "white",
+            "animal": "lioness",
+            "read": "Cartoon lioness queen with coronet and ball finial on a cream body."
+          },
+          "rook": {
+            "path": "white/african_fauna/white_rook.png",
+            "type": "rook",
+            "color": "white",
+            "animal": "giraffe",
+            "read": "Cartoon giraffe rook with soft spots and ossicones on a cream tower body."
+          },
+          "bishop": {
+            "path": "white/african_fauna/white_bishop.png",
+            "type": "bishop",
+            "color": "white",
+            "animal": "elephant",
+            "read": "Cartoon elephant bishop with ears, trunk, tusks, and a light mitre cue."
+          },
+          "knight": {
+            "path": "white/african_fauna/white_knight.png",
+            "type": "knight",
+            "color": "white",
+            "animal": "zebra",
+            "read": "Cartoon zebra knight with black stripes on a cream pedestal."
+          },
+          "pawn": {
+            "path": "white/african_fauna/white_pawn.png",
+            "type": "pawn",
+            "color": "white",
+            "animal": "meerkat",
+            "read": "Cartoon meerkat pawn on a cream pedestal with a simple collar."
+          }
+        }
+      }
+    }
+  ]
+}
