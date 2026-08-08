@@ -47,6 +47,18 @@ LEVEL_TUNING = {
     10: {"depth": 15, "time": 5.0},
 }
 
+# "Phone a friend": an "api-user" side to move can ask the server for
+# GNU Chess's own recommended move in the current position, without
+# submitting it — a hint, not a move. See ChessGame.phone_a_friend().
+# Only these two tuning tiers are offered, reusing LEVEL_TUNING's depth/
+# time caps for levels 5 and 10 ("call a weaker friend" vs. "call a
+# strong friend"). Each is budgeted separately per side, per game, so
+# an API user can't just re-ask a level-10 friend a hundred times.
+FRIEND_LEVELS = (5, 10)
+DEFAULT_FRIEND_LIMITS = {5: 2, 10: 1}
+FRIEND_LIMIT_MIN = 0  # 0 disables that tier entirely for the game
+FRIEND_LIMIT_MAX = 50  # sane ceiling; this is a hint budget, not a real resource
+
 # A side is one of three types:
 #   "api-user" — moves come from the REST API (port 5003), e.g. an agent or curl.
 #   "web-user"  — moves come from a person clicking the board in the browser
@@ -69,13 +81,54 @@ AUTOPLAY_PAUSE_SECONDS = 1.0
 
 # Display name and chat-message length caps. Both are trimmed rather than
 # rejected outright — a display name or a short chat line is a cosmetic
-# add-on to a move, not something worth failing the move over.
+# add-on to a move, not something worth failing the move over. Chat is
+# always attached to a move (the `chat` argument to make_move()) — there
+# is no standalone/banter channel; see the removed send_chat()/
+# POST /api/game/chat in the module history if you're looking for one.
 NAME_MAX_LEN = 40
-MESSAGE_MAX_LEN = 240
+CHAT_MAX_LEN = 240
 # "reasoning" is a private note an API user can attach to their own move
-# (see make_move()) — never returned by any endpoint, so it's allowed a
-# little more room than a chat message.
+# (see make_move()) — never returned by any endpoint *while the game is
+# in progress*, so it's allowed a little more room than a chat message.
+# The one exception is transcript() (see below): once a game has ended,
+# there is no ongoing competitive advantage left to protect, so a
+# finished game's transcript folds reasoning in as PGN comments.
 REASONING_MAX_LEN = 1000
+
+# Statuses state_status()/transcript() treat as "the game has ended" —
+# anything _game_over_reason() can return. Kept as one tuple so
+# transcript()'s "has this game actually finished?" check and any future
+# caller can share the same list instead of re-deriving it.
+FINISHED_STATUSES = (
+    "checkmate",
+    "stalemate",
+    "draw_insufficient_material",
+    "draw_75_moves",
+    "draw_5fold_repetition",
+    "draw_claimable_50_moves",
+    "draw_claimable_threefold_repetition",
+    "resigned",
+)
+
+# transcript()'s PGN "Termination" tag — a standard supplementary PGN tag
+# (used by lichess.org, chess.com, and most PGN-writing tools) that says
+# in plain words why the game ended, distinct from the bare Result tag
+# ("1-0"/"0-1"/"1/2-1/2").
+TERMINATION_LABELS = {
+    "checkmate": "checkmate",
+    "stalemate": "stalemate",
+    "draw_insufficient_material": "draw by insufficient material",
+    "draw_75_moves": "draw by 75-move rule",
+    "draw_5fold_repetition": "draw by fivefold repetition",
+    "draw_claimable_50_moves": "draw (50-move rule claimable)",
+    "draw_claimable_threefold_repetition": "draw (threefold repetition claimable)",
+    "resigned": "resignation",
+}
+
+# transcript()'s PGN White/Black tags fall back to this when a side has
+# no display name set (see set_name()) — a human-readable stand-in for
+# the raw PLAYER_TYPES string.
+TYPE_LABELS = {"api-user": "API user", "web-user": "Web user", "engine": "GNU Chess"}
 
 # Bounds for GET /api/game/wait's blocking wait — see ChessGame.wait_for_turn.
 # The cap keeps a single request from tying up a server thread indefinitely
@@ -117,6 +170,47 @@ class GameError(Exception):
     """
 
 
+# ---- PGN (Portable Game Notation) helpers, for ChessGame.transcript() ----
+# PGN is the standard plain-text chess game format — the same one
+# lichess.org, chess.com, and every chess GUI import/export. It has two
+# parts: a block of `[Tag "value"]` metadata lines, then movetext (move
+# numbers and SAN moves) with the result at the end. A move can carry a
+# free-text `{comment}` right after it, which is where this module tucks
+# in chat and reasoning. See https://en.wikipedia.org/wiki/Portable_Game_Notation.
+
+def _pgn_escape_tag(value):
+    """Escape a value for a `[Tag "value"]` line: PGN only requires
+    backslash and double-quote to be escaped inside a tag string."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _pgn_escape_comment(text):
+    """Collapse whitespace and strip the one character PGN comments
+    can't contain unescaped: an unmatched `{`/`}` would end the comment
+    early or break the parser, so both are swapped for parens instead of
+    trying to escape them (PGN has no escape sequence for braces)."""
+    text = " ".join(str(text).split())
+    return text.replace("{", "(").replace("}", ")")
+
+
+def _wrap_pgn_movetext(text, width=80):
+    """Soft-wrap movetext at `width` columns, breaking only on spaces.
+    Not required by the PGN spec (files up to 255 columns are legal),
+    but it's the convention most PGN-writing tools follow, and it keeps
+    a downloaded transcript readable in a plain text editor."""
+    words = text.split(" ")
+    lines, current = [], ""
+    for word in words:
+        if current and len(current) + 1 + len(word) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = f"{current} {word}" if current else word
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
+
+
 class ChessGame:
     def __init__(self):
         self._lock = threading.RLock()
@@ -134,20 +228,18 @@ class ChessGame:
         self.started = False
         self.result_reason = None    # set to "resigned" on resignation
         self.resigned_by = None      # "white" | "black"
-        self.move_log = []           # [{"ply","color","uci","san","by","name","message","ts"}, ...]
+        self.move_log = []           # [{"ply","color","uci","san","by","name","chat","ts"}, ...]
         self.created_at = None
-        # Standalone chat ("banter") — not attached to any particular
-        # move, and visible to everyone, unlike self._reasoning_log below.
-        # Reset every new_game() (see new_game()), since it's a
-        # conversation about that specific game, not a sticky preference
-        # like engine_levels or player_names.
-        self.chat_log = []           # [{"seq","color","name","message","ts"}, ...]
         # Optional private note an API user can attach to their own move
-        # via make_move()'s `reasoning` argument. Deliberately kept out of
-        # move_log/state()/every other read endpoint — "not shared with
-        # the other player" means not shared with anyone over the API,
-        # since there is no authentication to tell players apart. Reset
-        # every new_game(), same as chat_log.
+        # via make_move()'s `reasoning` argument. Kept out of move_log and
+        # every other read endpoint *while the game is in progress* —
+        # "not shared with the other player" means not shared with anyone
+        # over the API, since there is no authentication to tell players
+        # apart. The one exception is transcript() (see below): once a
+        # game has ended, reasoning is folded into that game's PGN
+        # transcript as move comments, since there's no ongoing
+        # competitive edge left to protect at that point. Reset every
+        # new_game().
         self._reasoning_log = []     # [{"ply","color","reasoning","ts"}, ...]
         # Difficulty is per side, not per game, so an engine-vs-engine game
         # can pit two different strengths against each other. For a game
@@ -160,6 +252,16 @@ class ChessGame:
         # time. None means "no name set"; the UI then just shows the
         # side's type ("api-user", "engine", ...) instead.
         self.player_names = {"white": None, "black": None}
+        # "Phone a friend" budget — see FRIEND_LEVELS/phone_a_friend()
+        # below. Unlike engine_levels/player_names, this is *not* sticky
+        # across games: it's a per-game resource budget, set fresh at
+        # each new_game() (defaulting to DEFAULT_FRIEND_LIMITS), and
+        # usage always resets to zero for a new game.
+        self.friend_limits = dict(DEFAULT_FRIEND_LIMITS)  # {5: N, 10: N}
+        self.friend_used = {
+            "white": {5: 0, 10: 0},
+            "black": {5: 0, 10: 0},
+        }
 
     # ---- engine lifecycle -------------------------------------------------
 
@@ -183,7 +285,8 @@ class ChessGame:
     # ---- game lifecycle -----------------------------------------------------
 
     def new_game(self, white, black, level=None, white_level=None, black_level=None,
-                 white_name=None, black_name=None):
+                 white_name=None, black_name=None,
+                 friend_level5_limit=None, friend_level10_limit=None):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
         ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
         (optional, 1-10) sets the difficulty for both sides at once — a
@@ -194,11 +297,16 @@ class ChessGame:
         strengths. Any level left unset keeps whatever was last set (or
         the default). `white_name`/`black_name` (each optional) likewise
         set that side's display name for this game, and otherwise keep
-        whatever name was last set (see set_name()). Returns (state_dict,
-        engine_move_or_None) — engine_move is set if white is 'engine',
-        since it then moves immediately. If both sides are 'engine', the
-        rest of the game plays out in the background — see
-        _start_autoplay."""
+        whatever name was last set (see set_name()). `friend_level5_limit`
+        and `friend_level10_limit` (each optional, integers, default
+        DEFAULT_FRIEND_LIMITS) set this game's "phone a friend" budget —
+        see phone_a_friend() — for level-5 and level-10 hints respectively.
+        Unlike the level/name settings above, these are not sticky: every
+        new game gets the defaults unless overridden here, and usage
+        always resets to zero. Returns (state_dict, engine_move_or_None) —
+        engine_move is set if white is 'engine', since it then moves
+        immediately. If both sides are 'engine', the rest of the game
+        plays out in the background — see _start_autoplay."""
         white = (white or "").strip().lower()
         black = (black or "").strip().lower()
         if white not in PLAYER_TYPES or black not in PLAYER_TYPES:
@@ -213,6 +321,10 @@ class ChessGame:
             white_name = self._clean_text(white_name, NAME_MAX_LEN)
         if black_name is not None:
             black_name = self._clean_text(black_name, NAME_MAX_LEN)
+        if friend_level5_limit is not None:
+            friend_level5_limit = self._validate_friend_limit(friend_level5_limit, 5)
+        if friend_level10_limit is not None:
+            friend_level10_limit = self._validate_friend_limit(friend_level10_limit, 10)
 
         with self._lock:
             self.board = chess.Board()
@@ -222,7 +334,6 @@ class ChessGame:
             self.result_reason = None
             self.resigned_by = None
             self.move_log = []
-            self.chat_log = []
             self._reasoning_log = []
             self.created_at = time.time()
             self._generation += 1
@@ -238,6 +349,14 @@ class ChessGame:
                 self.player_names["white"] = white_name
             if black_name is not None:
                 self.player_names["black"] = black_name
+            self.friend_limits = {
+                5: friend_level5_limit if friend_level5_limit is not None else DEFAULT_FRIEND_LIMITS[5],
+                10: friend_level10_limit if friend_level10_limit is not None else DEFAULT_FRIEND_LIMITS[10],
+            }
+            self.friend_used = {
+                "white": {5: 0, 10: 0},
+                "black": {5: 0, 10: 0},
+            }
 
             both_engines = white == "engine" and black == "engine"
             engine_move = None
@@ -299,6 +418,21 @@ class ChessGame:
             raise GameError(f"'level' must be between {LEVEL_MIN} and {LEVEL_MAX}")
         return level
 
+    def _validate_friend_limit(self, value, tier):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            raise GameError(
+                f"'friend_level{tier}_limit' must be an integer between "
+                f"{FRIEND_LIMIT_MIN} and {FRIEND_LIMIT_MAX}"
+            )
+        if not (FRIEND_LIMIT_MIN <= value <= FRIEND_LIMIT_MAX):
+            raise GameError(
+                f"'friend_level{tier}_limit' must be between "
+                f"{FRIEND_LIMIT_MIN} and {FRIEND_LIMIT_MAX}"
+            )
+        return value
+
     def _clean_text(self, text, max_len):
         """Strip and cap free-form text (a display name or a chat message)
         to `max_len` characters. Returns None for empty/whitespace-only
@@ -347,6 +481,28 @@ class ChessGame:
             # side to move is the side that got mated
             return "black" if self.board.turn == chess.WHITE else "white"
         return None
+
+    def _friend_summary_locked(self):
+        """Caller must hold self._lock. "Phone a friend" budget/usage for
+        the current game — see FRIEND_LEVELS/phone_a_friend(). Included in
+        state() so any reader (an API user checking their own budget, or
+        the board viewer's players bar) can see it without a dedicated
+        endpoint."""
+        def side(color):
+            used = self.friend_used[color]
+            limits = self.friend_limits
+            return {
+                "used": {"level_5": used[5], "level_10": used[10]},
+                "remaining": {
+                    "level_5": max(0, limits[5] - used[5]),
+                    "level_10": max(0, limits[10] - used[10]),
+                },
+            }
+        return {
+            "limits": {"level_5": self.friend_limits[5], "level_10": self.friend_limits[10]},
+            "white": side("white"),
+            "black": side("black"),
+        }
 
     def _board_grid(self):
         """8x8 grid, row 0 = rank 8 (black's back rank) down to row 7 = rank 1,
@@ -526,10 +682,10 @@ class ChessGame:
                 "players": {"white": self.white_type, "black": self.black_type},
                 "player_names": dict(self.player_names),
                 "engine_levels": dict(self.engine_levels),
+                "phone_a_friend": self._friend_summary_locked(),
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
                 "move_log": list(self.move_log),
-                "chat_log": list(self.chat_log),
             }
 
     def legal_moves(self, from_square=None):
@@ -553,21 +709,23 @@ class ChessGame:
                 })
             return moves
 
-    def make_move(self, move_str, message=None, reasoning=None):
+    def make_move(self, move_str, chat=None, reasoning=None):
         """Submit a move for whichever side is currently to move — works
         the same whether that side is 'api-user' or 'web-user'; only
         'engine' turns are rejected here (gnuchess moves itself).
 
-        `message` (optional) is a short chat line attached to this move —
+        `chat` (optional) is a short chat line attached to this move —
         it and this side's current display name (see set_name()) are
         stamped onto the move-log entry, so anyone who reads the game
         state after this point (in particular, the opponent's own next
-        call) sees them; there is no separate delivery step.
+        call) sees them; there is no separate delivery step, and no
+        standalone/banter channel — all chat rides along with a move.
 
         `reasoning` (optional) is a private note about why this move was
-        chosen. Unlike `message`, it is never returned by this or any
-        other method — it is only kept in self._reasoning_log, which no
-        endpoint reads from. See that attribute's comment in __init__.
+        chosen. Unlike `chat`, it is never returned by this or any other
+        method while the game is in progress — it is kept in
+        self._reasoning_log, which no endpoint reads from until the game
+        ends (see transcript() and that attribute's comment in __init__).
 
         Returns (player_move_entry, engine_entry_or_None) — the engine
         entry is set if, after this move, it becomes an 'engine' side's
@@ -590,9 +748,9 @@ class ChessGame:
             player_entry = {"ply": ply, "color": color, "uci": uci, "san": san,
                               "by": mover_type, "name": self.player_names.get(color),
                               "ts": time.time()}
-            clean_message = self._clean_text(message, MESSAGE_MAX_LEN)
-            if clean_message is not None:
-                player_entry["message"] = clean_message
+            clean_chat = self._clean_text(chat, CHAT_MAX_LEN)
+            if clean_chat is not None:
+                player_entry["chat"] = clean_chat
             self.move_log.append(player_entry)
 
             clean_reasoning = self._clean_text(reasoning, REASONING_MAX_LEN)
@@ -608,34 +766,67 @@ class ChessGame:
             self._bump_version_locked()
             return player_entry, engine_entry
 
-    def send_chat(self, color, message):
-        """Add a standalone chat line ("banter") — not attached to any
-        particular move, unlike `message` on make_move(). `color` is
-        'white' or 'black'; the message is stamped with that side's
-        current display name (see set_name()). Visible to everyone who
-        reads the game state (state()["chat_log"]), including a person
-        watching the board viewer. Requires a game to exist (so there is
-        something for the chat to be about), but not that it still be in
-        progress — a "gg" after the game ends is fine. Returns the
-        created entry."""
-        if color not in ("white", "black"):
-            raise GameError("'color' must be 'white' or 'black'")
-        clean_message = self._clean_text(message, MESSAGE_MAX_LEN)
-        if clean_message is None:
-            raise GameError("'message' is required")
+    def phone_a_friend(self, level):
+        """"Phone a friend": ask GNU Chess for its recommended move in the
+        current position, without submitting it. Only available to the
+        side to move when that side is 'api-user' — this is a hint for a
+        programmatic caller weighing a decision, not something a
+        'web-user' or the 'engine' side itself needs. `level` must be
+        5 or 10 (see FRIEND_LEVELS); each is budgeted separately, per
+        side, per game (see self.friend_limits / self.friend_used, set at
+        new_game() time). Calling this does not change the board, does
+        not end your turn, and does not count as your move — you still
+        need to submit a move yourself via make_move(), whether or not
+        you take the suggestion. Returns
+        {"level", "uci", "san", "color", "used", "limit", "remaining"}.
+        Raises GameError if no game is in progress, it is not an
+        'api-user' side's turn, `level` is not 5 or 10, or that side has
+        no queries left at that level."""
+        if level not in FRIEND_LEVELS:
+            raise GameError(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
         with self._lock:
             if not self.started:
                 raise GameError("no game in progress; POST /api/game to start one")
-            entry = {
-                "seq": len(self.chat_log) + 1,
-                "color": color,
-                "name": self.player_names.get(color),
-                "message": clean_message,
-                "ts": time.time(),
-            }
-            self.chat_log.append(entry)
+            if self._status() != "in_progress":
+                raise GameError(f"game is not in progress (status: {self._status()})")
+            mover_type = self._current_player_type()
+            if mover_type != "api-user":
+                raise GameError("phone-a-friend is only available to the 'api-user' side to move")
+
+            color = "white" if self.board.turn == chess.WHITE else "black"
+            used = self.friend_used[color][level]
+            limit = self.friend_limits[level]
+            if used >= limit:
+                raise GameError(
+                    f"phone-a-friend limit reached for level {level} "
+                    f"({used} of {limit} used this game)"
+                )
+
+            engine = self._ensure_engine()
+            tuning = LEVEL_TUNING[level]
+            search_limit = chess.engine.Limit(depth=tuning["depth"], time=tuning["time"])
+            # engine.play() only computes a move for the position it's
+            # given — it does not push anything onto self.board itself,
+            # so the game is untouched by asking for a hint.
+            result = engine.play(self.board, search_limit)
+            move = result.move
+            if move is None:
+                raise GameError("the engine could not suggest a move for the current position")
+            san = self.board.san(move)
+            uci = move.uci()
+
+            self.friend_used[color][level] = used + 1
             self._bump_version_locked()
-            return entry
+
+            return {
+                "level": level,
+                "uci": uci,
+                "san": san,
+                "color": color,
+                "used": self.friend_used[color][level],
+                "limit": limit,
+                "remaining": max(0, limit - self.friend_used[color][level]),
+            }
 
     def resign(self, player):
         player = (player or "").strip().lower()
@@ -650,3 +841,90 @@ class ChessGame:
             self.resigned_by = player
             self._bump_version_locked()
             return self.state()
+
+    def transcript(self):
+        """Build a PGN (Portable Game Notation) transcript of the game
+        that just ended — the standard plain-text chess-game format;
+        see the module comment above ChessGame for a link. Folds in any
+        move-attached chat (make_move()'s `chat`) and any private
+        `reasoning` (see that argument's docstring and
+        self._reasoning_log's comment in __init__) as PGN comments on
+        the move they belong to.
+
+        Only available once the game has actually ended: `reasoning` is
+        never exposed while a game is in progress, but once it's over
+        there is no ongoing advantage left to protect, so it's folded
+        into this one summary artifact instead of staying hidden
+        forever. Raises GameError if no game has started, or the
+        current game is still in progress.
+
+        Returns the transcript as a single string (tag pairs, a blank
+        line, then movetext ending in the PGN result token)."""
+        with self._lock:
+            if not self.started:
+                raise GameError("no game in progress; nothing to make a transcript of")
+            status = self._status()
+            if status not in FINISHED_STATUSES:
+                raise GameError(
+                    "the game must be over before a transcript is available "
+                    f"(status: {status})"
+                )
+            move_log = list(self.move_log)
+            reasoning_by_ply = {r["ply"]: r["reasoning"] for r in self._reasoning_log}
+            winner = self._winner()
+            white_type, black_type = self.white_type, self.black_type
+            player_names = dict(self.player_names)
+            engine_levels = dict(self.engine_levels)
+            created_at = self.created_at
+
+        def side_label(color, ptype):
+            return player_names.get(color) or TYPE_LABELS.get(ptype, ptype)
+
+        if winner == "white":
+            result = "1-0"
+        elif winner == "black":
+            result = "0-1"
+        elif status == "resigned":
+            result = "*"  # shouldn't happen — resign() always sets a winner
+        else:
+            result = "1/2-1/2"
+
+        tags = [
+            ("Event", "computer-chess"),
+            ("Site", "?"),
+            ("Date", time.strftime("%Y.%m.%d", time.localtime(created_at or time.time()))),
+            ("Round", "-"),
+            ("White", side_label("white", white_type)),
+            ("Black", side_label("black", black_type)),
+            ("Result", result),
+            ("WhiteType", white_type),
+            ("BlackType", black_type),
+        ]
+        if white_type == "engine":
+            tags.append(("WhiteEngineLevel", str(engine_levels.get("white", DEFAULT_LEVEL))))
+        if black_type == "engine":
+            tags.append(("BlackEngineLevel", str(engine_levels.get("black", DEFAULT_LEVEL))))
+        tags.append(("Termination", TERMINATION_LABELS.get(status, status)))
+
+        header = "\n".join(f'[{key} "{_pgn_escape_tag(value)}"]' for key, value in tags)
+
+        parts = []
+        for entry in move_log:
+            ply = entry["ply"]
+            if entry["color"] == "white":
+                parts.append(f"{(ply + 1) // 2}.")
+            parts.append(entry["san"])
+            comment_bits = []
+            chat = entry.get("chat")
+            if chat:
+                comment_bits.append(f"Chat: {chat}")
+            reasoning = reasoning_by_ply.get(ply)
+            if reasoning:
+                comment_bits.append(f"Reasoning: {reasoning}")
+            if comment_bits:
+                parts.append("{" + _pgn_escape_comment(" / ".join(comment_bits)) + "}")
+        parts.append(result)
+
+        movetext = _wrap_pgn_movetext(" ".join(parts))
+        return f"{header}\n\n{movetext}\n"
+

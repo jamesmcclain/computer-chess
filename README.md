@@ -58,6 +58,14 @@ that side's display name for this game. Omit either to keep whatever
 name was last set for that side — see `POST /api/game/name` below,
 which also covers a game already in progress.
 
+`friend_level5_limit` and `friend_level10_limit` (each optional,
+integers `0`-`50`, default `2` and `1` respectively) set this game's
+"phone a friend" budget: how many level-5 and level-10 engine hints
+an `"api-user"` side may request over the course of the game. Unlike
+`level`/the name fields above, these are not sticky — every new game
+gets the defaults shown above unless overridden here, and usage
+always resets to zero. See `POST /api/game/phone-a-friend` below.
+
 If `white` is `"engine"` and `black` is not, GNU Chess plays its
 opening move immediately. The response returns this move as
 `engine_move`.
@@ -136,10 +144,14 @@ move.
   "players": {"white": "api-user", "black": "engine"},
   "player_names": {"white": "Deep Purple", "black": null},
   "engine_levels": {"white": 5, "black": 5},
+  "phone_a_friend": {
+    "limits": {"level_5": 2, "level_10": 1},
+    "white": {"used": {"level_5": 0, "level_10": 0}, "remaining": {"level_5": 2, "level_10": 1}},
+    "black": {"used": {"level_5": 0, "level_10": 0}, "remaining": {"level_5": 2, "level_10": 1}}
+  },
   "fullmove_number": 1,
   "halfmove_clock": 0,
-  "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "message": "Good luck!"}],
-  "chat_log": [{"seq": 1, "color": "black", "name": null, "message": "gg, well played", "ts": 1717000005.1}]
+  "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"}]
 }
 ```
 
@@ -148,12 +160,17 @@ move.
 `draw_5fold_repetition`, `draw_claimable_50_moves`,
 `draw_claimable_threefold_repetition`, `resigned`.
 
+`phone_a_friend` shows this game's hint budget (`limits`, set at
+`POST /api/game` time) and each side's usage/remaining count at each
+tier — see `POST /api/game/phone-a-friend` below. Only an `"api-user"`
+side can use it, but the field is always present so anyone reading
+the state can see the budget.
+
 Each `move_log` entry's `name` is that side's display name at the time
 of the move, or `null` if none was set (see `POST /api/game/name`
-above). Its `message` is present only if that move carried a chat
-line (see `POST /api/game/move` below). `chat_log` holds standalone
-chat not attached to any move (see `POST /api/game/chat` below),
-newest last.
+above). Its `chat` is present only if that move carried a chat line
+(see `POST /api/game/move` below). There is no standalone chat
+channel — every chat line belongs to a move.
 
 If no game has started, this endpoint returns `404`.
 
@@ -179,25 +196,10 @@ those is already true when it is called — including if no game has
 started. A timed-out response looks the same as any other: check
 `state.turn` and `state.game_over` in it to tell the difference.
 
-### `POST /api/game/chat` — send a standalone chat message
-
-```json
-{"color": "white", "message": "gg, well played"}
-```
-
-`color` is `"white"` or `"black"`. `message` (up to 240 characters,
-trimmed rather than rejected if longer) is added to `chat_log` (see
-`GET /api/game` above), stamped with that side's current display
-name. Unlike `POST /api/game/move`'s `message` field, this chat is
-not tied to any particular move. Use it for a greeting, a comment
-between moves, or anything not about the move you just made. Works
-any time a game exists, including after it has ended.
-Response: `{"chat": {...}, "state": {...}}`.
-
 ### `POST /api/game/move` — submit a move
 
 ```json
-{"move": "e2e4", "message": "Good luck!", "reasoning": "e4 grabs the center"}
+{"move": "e2e4", "chat": "Good luck!", "reasoning": "e4 grabs the center"}
 ```
 
 This endpoint accepts UCI notation (`e2e4`, `e7e8q` for promotion) or
@@ -206,9 +208,10 @@ turn. The caller does not name the color, because only one side can
 move at a time. If it becomes GNU Chess's turn next, the server
 computes and applies its reply immediately.
 
-`message` (optional, up to 240 characters, trimmed rather than
-rejected if longer) attaches a short chat line to this move. There is
-no separate delivery step. The message is stamped onto this move's
+`chat` (optional, up to 240 characters, trimmed rather than rejected
+if longer) attaches a short chat line to this move. There is no
+separate delivery step, and no standalone chat channel — this is the
+only way to send chat. The chat is stamped onto this move's
 `move_log` entry, along with the mover's current display name. The
 opponent sees both the next time they read the game state — for
 example, the response to their own next move. A person watching the
@@ -216,12 +219,15 @@ board viewer sees it there too, next to the move.
 
 `reasoning` (optional, up to 1000 characters, also trimmed rather
 than rejected if longer) is a private note on why this move was
-chosen. Unlike `message`, it is never returned by this or any other
-endpoint. It is kept server-side only, for example for later review
-by whoever is operating the server.
+chosen. Unlike `chat`, it is never returned by this or any other
+endpoint while the game is in progress. It is kept server-side only,
+for example for later review by whoever is operating the server. The
+one exception is `GET /api/game/transcript` (below): once the game
+has ended, reasoning is folded into that game's transcript, since
+there is no longer any ongoing advantage to protect.
 
 ```json
-{"move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "message": "Good luck!"},
+{"move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"},
  "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine", "name": "GNU Chess"},
  "state": {...}}
 ```
@@ -229,6 +235,35 @@ by whoever is operating the server.
 This endpoint returns `400` for an illegal or unparseable move, for a
 move submitted during the engine's turn, or when no game is in
 progress.
+
+### `POST /api/game/phone-a-friend` — ask the engine for a move recommendation
+
+```json
+{"level": 10}
+```
+
+For the `"api-user"` side to move only. Asks GNU Chess what it would
+play in the current position, without submitting that move: the board
+is unchanged, your turn does not end, and this is not a substitute for
+`POST /api/game/move` — you still submit your own move afterward,
+whether or not you take the suggestion.
+
+`level` is `5` or `10` — these are the only two tiers offered. Each has
+its own budget for the game, set at `POST /api/game` time
+(`friend_level5_limit`/`friend_level10_limit`, default `2` and `1`
+respectively) and tracked separately per side, so in a two-API-user
+game each caller gets their own budget.
+
+```json
+{"advice": {"level": 10, "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},
+ "state": {...}}
+```
+
+Returns `400` if it is not your turn, your side is not `"api-user"`,
+`level` is not `5` or `10`, or you have no queries left at that level.
+Current budget and usage for both sides is always visible in
+`state.phone_a_friend` (see `GET /api/game` above), whether or not
+you've called this endpoint yet.
 
 ### `POST /api/game/resign` — resign
 
@@ -238,6 +273,45 @@ progress.
 
 This endpoint ends the game. The API records the other side as the
 winner.
+
+### `GET /api/game/transcript` — download a PGN transcript
+
+Only once the game has ended (any status but `not_started`/
+`in_progress`). Returns a [PGN (Portable Game
+Notation)](https://en.wikipedia.org/wiki/Portable_Game_Notation)
+transcript of the game — the standard plain-text chess format read by
+lichess.org, chess.com, and most chess software. Response is the raw
+PGN text (`Content-Type: application/x-chess-pgn`), not JSON, with a
+`Content-Disposition` header so a browser downloads it as a `.pgn`
+file rather than displaying it.
+
+Metadata (players, result, engine levels where relevant, and how the
+game ended) is in the PGN tag pairs at the top. Every move's `chat`
+(see `POST /api/game/move` above) and any private `reasoning`
+recorded for it are folded in as a PGN comment on that move —
+`reasoning` is otherwise never returned by any endpoint, but once the
+game is over there is no ongoing advantage left to protect. For
+example:
+
+```
+[Event "computer-chess"]
+[Site "?"]
+[Date "2026.08.08"]
+[Round "-"]
+[White "API user"]
+[Black "GNU Chess"]
+[Result "1-0"]
+[WhiteType "api-user"]
+[BlackType "engine"]
+[BlackEngineLevel "5"]
+[Termination "checkmate"]
+
+1. e4 {Chat: Good luck! / Reasoning: e4 grabs the center} e5 2. Qh5 Nc6
+3. Bc4 Nf6 4. Qxf7# {Chat: gg} 1-0
+```
+
+Returns `400` if no game has started, or the current game is still
+in progress.
 
 ## Board viewer (port 5004)
 
@@ -250,6 +324,13 @@ squares that changed, so there is no flash or reload.
 `GET /state` is also available for a single fetch. The page uses
 `GET /state` as a fallback when SSE is not available.
 
+**Downloading a transcript.** Once the game ends, and before a new
+one (if any) is started, a "Download transcript (PGN)" button appears
+above the start-game form. It downloads the just-finished game from
+`GET /game/transcript` (the same underlying call as
+`GET /api/game/transcript` above) and disappears again the moment a
+new game actually starts.
+
 **Starting a game.** When no game is in progress, including right
 after a game finishes, the page shows a form to start one. A person
 picks a type for White and a type for Black:
@@ -261,7 +342,10 @@ picks a type for White and a type for Black:
 
 Each side that is `engine` gets its own difficulty dropdown, so an
 engine-vs-engine game can pit two different strengths against each
-other. This form supports every combination the API supports:
+other. Whenever either side is set to `api-user`, the form also shows
+two "phone a friend" inputs — the level-10 and level-5 query limits
+for this game (see `POST /api/game/phone-a-friend` above), defaulting
+to `1` and `2`. This form supports every combination the API supports:
 
 - Two API users.
 - An API user against the engine.
@@ -277,14 +361,14 @@ shows a small picker for the piece to promote to.
 
 **Names and chat.** A players bar above the board shows each side's
 display name, type, and — for an `"engine"` side — its difficulty
-level. Set a name with `POST /api/game/name`. The side to move is
-highlighted. Any move that carried a `message` (see
-`POST /api/game/move`), and any standalone chat sent with
-`POST /api/game/chat`, shows up in a chat panel below the board.
-Move-attached chat appears next to that move. Banter stands on its
-own. A person at this page can send banter too, through an input box
-at the bottom of the panel. This box is shown whenever at least one
-side is `web-user`.
+level, or — for an `"api-user"` side — its remaining "phone a friend"
+budget at each level. Set a name with `POST /api/game/name`. The side
+to move is highlighted. Any move that carried `chat` (see
+`POST /api/game/move`) shows up in a chat panel below the board, next
+to that move — there is no standalone chat channel. While it is a
+`web-user` side's own turn, an input box under the panel lets that
+person type a message; it is attached automatically to whichever move
+they submit next.
 
 **Resign or restart.** While a game is in progress, a button appears
 above the board. If a person is behind either side (at least one

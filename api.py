@@ -4,9 +4,13 @@ No authentication — anyone who can reach the port can start games and
 submit moves for either side. All requests/responses are JSON.
 """
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 from game import (
+    DEFAULT_FRIEND_LIMITS,
+    FRIEND_LEVELS,
+    FRIEND_LIMIT_MAX,
+    FRIEND_LIMIT_MIN,
     GameError,
     LEVEL_MAX,
     LEVEL_MIN,
@@ -25,7 +29,11 @@ API_DOC = {
                      "white_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
                      "black_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
                      "white_name": "optional, up to 40 chars",
-                     "black_name": "optional, up to 40 chars"},
+                     "black_name": "optional, up to 40 chars",
+                     "friend_level5_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
+                                             f"default {DEFAULT_FRIEND_LIMITS[5]}",
+                     "friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
+                                              f"default {DEFAULT_FRIEND_LIMITS[10]}"},
             "description": "Start a new game, replacing any game already "
                             "in progress. Both sides can be 'engine'; the "
                             "two engines then play each other, paced one "
@@ -41,34 +49,48 @@ API_DOC = {
                             "shown in the board viewer and stamped on its "
                             "move-log entries; leave unset to keep "
                             "whatever name was last set for that side (see "
-                            "POST /api/game/name). If white is 'engine' "
-                            "and black is not, gnuchess's opening move is "
-                            "played immediately and returned as "
-                            "'engine_move'.",
+                            "POST /api/game/name). 'friend_level5_limit'/"
+                            "'friend_level10_limit' set this game's 'phone "
+                            "a friend' budget (see "
+                            "POST /api/game/phone-a-friend) — how many "
+                            "level-5 and level-10 engine hints an "
+                            "'api-user' side may ask for over the course "
+                            "of this game. Unlike the level/name settings "
+                            "above, these are not sticky: every new game "
+                            "gets the defaults shown above unless "
+                            "overridden here, and usage always resets to "
+                            "zero. If white is 'engine' and black is not, "
+                            "gnuchess's opening move is played immediately "
+                            "and returned as 'engine_move'.",
         },
         "GET /api/game": "Current game state (board, whose turn it is, "
-                          "status, move log, chat log, engine levels, "
-                          "player names, ...). This is also how to check "
-                          "whose turn it is — see the 'turn' field.",
+                          "status, move log — including any chat attached "
+                          "to a move — engine levels, player names, "
+                          "...). This is also how to check whose turn it "
+                          "is — see the 'turn' field.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
                                       "Optional query param: from=e2",
         "POST /api/game/move": {
             "body": {"move": "e2e4 (UCI) or e4 (SAN)",
-                     "message": "optional, up to 240 chars",
+                     "chat": "optional, up to 240 chars",
                      "reasoning": "optional, up to 1000 chars"},
             "description": "Submit a move for whichever side is currently "
-                            "to move. 'message' (optional) is a short chat "
+                            "to move. 'chat' (optional) is a short chat "
                             "line attached to this move — it is stamped, "
                             "along with your current display name (see "
                             "POST /api/game/name), onto this move's entry "
-                            "in 'move_log'. There is no separate inbox: "
-                            "your opponent sees it the next time they read "
-                            "the game state, e.g. in the response to their "
-                            "own next move, or a plain GET /api/game. "
+                            "in 'move_log'. There is no separate inbox and "
+                            "no standalone chat channel — all chat rides "
+                            "along with a move this way: your opponent "
+                            "sees it the next time they read the game "
+                            "state, e.g. in the response to their own "
+                            "next move, or a plain GET /api/game. "
                             "'reasoning' (optional) is a private note on "
-                            "why you chose this move — unlike 'message', "
-                            "it is never returned by this or any other "
-                            "endpoint; it is kept server-side only. If it "
+                            "why you chose this move — unlike 'chat', it "
+                            "is never returned by this or any other "
+                            "endpoint while the game is in progress; it "
+                            "is kept server-side only until the game ends "
+                            "(see GET /api/game/transcript). If it "
                             "becomes the engine's turn afterward, gnuchess "
                             "replies immediately and its move is returned "
                             "as 'engine_move'.",
@@ -88,21 +110,55 @@ API_DOC = {
                             "move with one call instead of polling "
                             "GET /api/game in a loop.",
         },
-        "POST /api/game/chat": {
-            "body": {"color": "white|black", "message": "up to 240 chars"},
-            "description": "Send a standalone chat message ('banter') "
-                            "from 'color', not attached to any particular "
-                            "move (contrast with 'message' on "
-                            "POST /api/game/move). Visible to everyone who "
-                            "reads the game state afterward, in "
-                            "'chat_log', including a person watching the "
-                            "board viewer. Requires a game to exist, but "
-                            "not that it still be in progress. Returns "
-                            "the created entry.",
+        "POST /api/game/phone-a-friend": {
+            "body": {"level": f"one of: {', '.join(str(l) for l in FRIEND_LEVELS)}"},
+            "description": "For the 'api-user' side to move only: ask "
+                            "gnuchess what it would play in the current "
+                            "position, without submitting that move. Does "
+                            "not change the board, does not end your "
+                            "turn, and is not a substitute for "
+                            "POST /api/game/move — you still submit your "
+                            "own move afterward, whether or not you take "
+                            "the suggestion. Each of the two levels "
+                            "(5 and 10) has its own budget for the game, "
+                            "set at POST /api/game time (see "
+                            "'friend_level5_limit'/'friend_level10_limit' "
+                            "above; defaults "
+                            f"{DEFAULT_FRIEND_LIMITS[5]} and "
+                            f"{DEFAULT_FRIEND_LIMITS[10]} respectively) "
+                            "and tracked separately per side, so a "
+                            "two-api-user game gives each caller their "
+                            "own budget. Returns 400 if it is not your "
+                            "turn, your side is not 'api-user', 'level' "
+                            "is not 5 or 10, or you have no queries left "
+                            "at that level. Response: {'advice': "
+                            "{'level', 'uci', 'san', 'color', 'used', "
+                            "'limit', 'remaining'}, 'state': {...}}. "
+                            "Current budget/usage for both sides is also "
+                            "always visible in 'state.phone_a_friend'.",
         },
         "POST /api/game/resign": {
             "body": {"player": "white|black"},
             "description": "Resign on behalf of a side, ending the game.",
+        },
+        "GET /api/game/transcript": {
+            "description": "Only once the game has ended (any status but "
+                            "'in_progress'/'not_started'): a PGN "
+                            "(Portable Game Notation) transcript of the "
+                            "game — the standard plain-text chess format "
+                            "read by lichess.org, chess.com, and most "
+                            "chess software. Every move's 'chat' (see "
+                            "POST /api/game/move) and any private "
+                            "'reasoning' recorded for it are folded in as "
+                            "a PGN comment on that move — reasoning is "
+                            "otherwise never returned by any endpoint, "
+                            "but once the game is over there's no ongoing "
+                            "advantage left to protect. Returns 400 if no "
+                            "game has started or the current game is "
+                            "still in progress. Response is the raw PGN "
+                            "text (Content-Type: application/x-chess-pgn), "
+                            "not JSON, with a Content-Disposition header "
+                            "so a browser downloads it as a .pgn file.",
         },
         "GET /api/engine-levels": "List of valid gnuchess difficulty "
                                    "levels (1=weakest..10=strongest) and "
@@ -168,10 +224,13 @@ def create_api_app(game):
         black_level = body.get("black_level")
         white_name = body.get("white_name")
         black_name = body.get("black_name")
+        friend_level5_limit = body.get("friend_level5_limit")
+        friend_level10_limit = body.get("friend_level10_limit")
         try:
             state, engine_move = game.new_game(
                 white, black, level=level, white_level=white_level, black_level=black_level,
                 white_name=white_name, black_name=black_name,
+                friend_level5_limit=friend_level5_limit, friend_level10_limit=friend_level10_limit,
             )
         except GameError as e:
             return error(str(e))
@@ -196,15 +255,31 @@ def create_api_app(game):
     def post_move():
         body = request.get_json(silent=True) or {}
         move_str = body.get("move")
-        message = body.get("message")
+        chat = body.get("chat")
         reasoning = body.get("reasoning")
         if not move_str:
             return error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
         try:
-            player_move, engine_move = game.make_move(move_str, message=message, reasoning=reasoning)
+            player_move, engine_move = game.make_move(move_str, chat=chat, reasoning=reasoning)
         except GameError as e:
             return error(str(e))
         return jsonify(move=player_move, engine_move=engine_move, state=game.state())
+
+    @app.post("/api/game/phone-a-friend")
+    def post_phone_a_friend():
+        body = request.get_json(silent=True) or {}
+        level = body.get("level")
+        if level is None:
+            return error(f"'level' is required (one of: {', '.join(str(l) for l in FRIEND_LEVELS)})")
+        try:
+            level = int(level)
+        except (TypeError, ValueError):
+            return error(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
+        try:
+            advice = game.phone_a_friend(level)
+        except GameError as e:
+            return error(str(e))
+        return jsonify(advice=advice, state=game.state())
 
     @app.get("/api/game/wait")
     def get_wait():
@@ -216,17 +291,6 @@ def create_api_app(game):
             return error(str(e))
         return jsonify(state=state)
 
-    @app.post("/api/game/chat")
-    def post_chat():
-        body = request.get_json(silent=True) or {}
-        color = body.get("color")
-        message = body.get("message")
-        try:
-            entry = game.send_chat(color, message)
-        except GameError as e:
-            return error(str(e))
-        return jsonify(chat=entry, state=game.state())
-
     @app.post("/api/game/resign")
     def post_resign():
         body = request.get_json(silent=True) or {}
@@ -236,6 +300,18 @@ def create_api_app(game):
         except GameError as e:
             return error(str(e))
         return jsonify(state=state)
+
+    @app.get("/api/game/transcript")
+    def get_transcript():
+        try:
+            pgn = game.transcript()
+        except GameError as e:
+            return error(str(e))
+        return Response(
+            pgn,
+            mimetype="application/x-chess-pgn",
+            headers={"Content-Disposition": 'attachment; filename="computer-chess.pgn"'},
+        )
 
     @app.get("/api/engine-levels")
     def get_engine_levels():

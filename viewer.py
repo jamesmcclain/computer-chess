@@ -187,6 +187,13 @@ PAGE = """<!doctype html>
   .start-row { display: flex; align-items: center; gap: 0.6rem; }
   .start-row label { color: #aaa; font-size: 0.82rem; width: 6rem; flex-shrink: 0; }
   .start-row select { font-size: 0.85rem; }
+  .friend-inputs { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+  .friend-inputs input[type="number"] {
+    background: #1a1a1a; color: #eee; border: 1px solid #444; border-radius: 6px;
+    padding: 0.25rem 0.4rem; font-size: 0.8rem; width: 3.2rem;
+  }
+  .friend-inputs input[type="number"]:focus { outline: 1px solid var(--accent); }
+  .friend-inputs-tag { color: #888; font-size: 0.72rem; }
   #start-btn {
     all: unset; cursor: pointer; text-align: center; margin-top: 0.3rem;
     background: var(--accent); color: #1a1a1a; font-weight: 600; font-size: 0.85rem;
@@ -303,15 +310,29 @@ PAGE = """<!doctype html>
   #move-arrow-head { fill: var(--accent); opacity: 0; transition: opacity 0.5s ease; }
   #move-arrow-head.shown { opacity: 0.85; }
 
+  /* ---- transcript button -------------------------------------------------
+     Shown only while state.game_over is true (and hidden again the moment
+     a new game actually starts, since that flips game_over back to
+     false) — see updateTranscriptButton(). Downloads the just-finished
+     game as a PGN file straight from GET /game/transcript; no JS beyond
+     toggling visibility is needed since that's a plain same-origin GET
+     with a Content-Disposition header. */
+  #transcript-btn {
+    display: none; text-decoration: none; text-align: center;
+    background: var(--panel-bg); border: 1px solid var(--panel-border); color: #ddd;
+    font-size: 0.82rem; font-weight: 600; padding: 0.5rem 1rem; border-radius: 8px;
+    margin-bottom: 0.75rem;
+  }
+  #transcript-btn:hover { border-color: var(--accent); color: var(--accent); }
+
   /* ---- chat -------------------------------------------------------------
-     Two kinds of message show up here, newest at the bottom: a short
-     line an API user attached to one of their moves (POST /api/game/move's
-     'message' field, shown next to that move's SAN), and standalone
-     banter from either side (POST /api/game/chat), not tied to a move.
-     A person at this page can also send banter of their own, through the
-     input row at the bottom — shown only when at least one side is
-     'web-user' (see updateChatInput()), attributed to whichever web-user
-     color makes sense (see webUserChatColor()). */
+     All chat rides along with a move (POST /api/game/move's 'chat'
+     field, shown next to that move's SAN in the panel below) — there is
+     no standalone/banter channel. A person at this page can type a
+     message here while it's their turn; it's attached automatically to
+     whichever move they submit next (see submitMove()) — shown only
+     when it's currently a 'web-user' side's own turn (see
+     updateChatInput()), since there's no other way for chat to go out. */
   #chat-panel {
     display: none; flex-direction: column; width: 100%; max-width: 420px;
     margin-top: 1rem; background: var(--panel-bg); border: 1px solid var(--panel-border);
@@ -333,16 +354,14 @@ PAGE = """<!doctype html>
     border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.8rem;
   }
   #chat-input-row input:focus { outline: 1px solid var(--accent); }
-  #chat-input-row button {
-    all: unset; cursor: pointer; padding: 0.35rem 0.7rem; border-radius: 6px;
-    background: var(--accent); color: #1a1a1a; font-weight: 600; font-size: 0.78rem;
-  }
 </style>
 </head>
 <body>
   <h1>computer-chess &mdash; board viewer</h1>
   <div id="conn">connecting&hellip;</div>
   <div id="status"></div>
+
+  <a id="transcript-btn" href="/game/transcript">Download transcript (PGN)</a>
 
   <div id="start-panel">
     <h2>Start a new game</h2>
@@ -353,6 +372,15 @@ PAGE = """<!doctype html>
     <div class="start-row"><label>Black</label><select id="start-black"></select></div>
     <div class="start-row" id="start-black-level-row" style="display:none;">
       <label>Black level</label><select id="start-black-level"></select>
+    </div>
+    <div class="start-row" id="start-friend-row" style="display:none;">
+      <label>Friend calls</label>
+      <span class="friend-inputs">
+        <input type="number" id="start-friend-l10" min="0" max="50" step="1" title="Level-10 phone-a-friend queries allowed per api-user side">
+        <span class="friend-inputs-tag">&times; L10</span>
+        <input type="number" id="start-friend-l5" min="0" max="50" step="1" title="Level-5 phone-a-friend queries allowed per api-user side">
+        <span class="friend-inputs-tag">&times; L5</span>
+      </span>
     </div>
     <button id="start-btn">Start game</button>
     <div id="start-error"></div>
@@ -408,8 +436,7 @@ PAGE = """<!doctype html>
     <div class="chat-title">Chat</div>
     <div id="chat-log"></div>
     <div id="chat-input-row">
-      <input id="chat-input" type="text" maxlength="240" placeholder="Send a message&hellip;">
-      <button id="chat-send-btn">Send</button>
+      <input id="chat-input" type="text" maxlength="240" placeholder="Message to send with your next move&hellip;">
     </div>
   </div>
 <script>
@@ -440,8 +467,8 @@ const chatPanelEl = document.getElementById("chat-panel");
 const chatLogEl = document.getElementById("chat-log");
 const chatInputRowEl = document.getElementById("chat-input-row");
 const chatInputEl = document.getElementById("chat-input");
-const chatSendBtnEl = document.getElementById("chat-send-btn");
 const gameControlBtnEl = document.getElementById("game-control-btn");
+const transcriptBtnEl = document.getElementById("transcript-btn");
 
 // cellEls[r][c] = the .sq div. lastCodes[r][c] = piece code last painted
 // there ("wN", etc.) or null. Built once; reused across every update so
@@ -469,11 +496,10 @@ let lastArrowLogLength = 0;
 let arrowFadeTimer = null;
 const ARROW_FADE_MS = 60000;
 
-// Chat: how many move_log entries and chat_log (banter) entries have
-// already been rendered into the chat panel, so re-renders only add the
-// entries not yet shown — see updateChatPanel().
+// Chat: how many move_log entries have already been rendered into the
+// chat panel, so re-renders only add the entries not yet shown — see
+// updateChatPanel().
 let lastChatMoveLogLength = 0;
-let lastChatBanterLogLength = 0;
 
 // Set by the "Restart" button (see updateGameControls()) to force the
 // start-game form open even though a game is still in progress — plain
@@ -824,15 +850,22 @@ async function onSquareClick(r, c) {
 }
 
 async function submitMove(uci) {
+  // If the chat input is showing and has text, it rides along with this
+  // move — there's no standalone send (see updateChatInput()).
+  const chatText = chatInputRowEl.style.display !== "none" ? chatInputEl.value.trim() : "";
   try {
+    const body = { move: uci };
+    if (chatText) body.chat = chatText;
     const res = await fetch("/game/move", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ move: uci }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       statusEl.textContent = data.error || "That move was rejected.";
+    } else {
+      chatInputEl.value = ""; // sent along with the move that just went out
     }
     // On success, the new state arrives through the SSE stream — no
     // need to render it here too.
@@ -902,6 +935,11 @@ function render(state) {
   // button forced it open early (see doRestart()).
   const needsStart = !state.started || state.game_over || forceStartPanel;
   startPanelEl.style.display = needsStart ? "flex" : "none";
+  // The transcript button tracks game_over specifically (not needsStart —
+  // forceStartPanel from the Restart button shouldn't show it, since that
+  // game hasn't actually ended). It disappears again the moment a new
+  // game starts, since that flips game_over back to false.
+  transcriptBtnEl.style.display = (state.started && state.game_over) ? "inline-block" : "none";
 
   if (!state.started) {
     boardEl.innerHTML = "";
@@ -916,7 +954,6 @@ function render(state) {
     chatInputRowEl.style.display = "none";
     chatLogEl.innerHTML = "";
     lastChatMoveLogLength = 0;
-    lastChatBanterLogLength = 0;
     statusEl.className = "";
     statusEl.textContent = "No game in progress. Start one below.";
     metaEl.textContent = "";
@@ -971,6 +1008,13 @@ function sideLabel(state, color) {
   let typeLabel = type;
   if (type === "engine" && state.engine_levels) {
     typeLabel = type + " (level " + state.engine_levels[color] + ")";
+  } else if (type === "api-user" && state.phone_a_friend) {
+    const f = state.phone_a_friend[color];
+    if (f) {
+      typeLabel = type + " (friend: " + f.remaining.level_10 + "/" +
+        state.phone_a_friend.limits.level_10 + " L10, " +
+        f.remaining.level_5 + "/" + state.phone_a_friend.limits.level_5 + " L5 left)";
+    }
   }
   return name ? name + " \\u2014 " + typeLabel : typeLabel;
 }
@@ -985,54 +1029,46 @@ function updatePlayersBar(state) {
 }
 
 // ---------------------------------------------------------------------
-// Chat: two sources, merged into one panel. A short line an API user (or
-// a web user — see below) attached to a move (the 'message' field on
-// POST /api/game/move, stamped onto that move's move_log entry), and
-// standalone banter (POST /api/game/chat's chat_log) not tied to any
-// move. Neither is polled for — both arrive as part of the normal state
-// push (SSE or otherwise); this just renders whichever entries carry a
-// message. Only the entries not yet shown are appended (merged by
-// timestamp, in case both grew in the same update), and the panel only
-// auto-scrolls if it was already scrolled to the bottom, so it doesn't
-// fight a person who scrolled up to read earlier history.
+// Chat: a short line an API user (or a web user — see below) attached
+// to a move (the 'chat' field on POST /api/game/move, stamped onto that
+// move's move_log entry). There is no standalone/banter channel — every
+// line shown here belongs to a specific move. Not polled for — it
+// arrives as part of the normal state push (SSE or otherwise); this
+// just renders whichever entries carry a 'chat'. Only the entries not
+// yet shown are appended, and the panel only auto-scrolls if it was
+// already scrolled to the bottom, so it doesn't fight a person who
+// scrolled up to read earlier history.
 // ---------------------------------------------------------------------
 function updateChatPanel(state) {
   const moveLog = state.move_log || [];
-  const banterLog = state.chat_log || [];
 
-  if (moveLog.length < lastChatMoveLogLength || banterLog.length < lastChatBanterLogLength) {
-    // A new game started with shorter logs than we last saw — start over.
+  if (moveLog.length < lastChatMoveLogLength) {
+    // A new game started with a shorter log than we last saw — start over.
     chatLogEl.innerHTML = "";
     lastChatMoveLogLength = 0;
-    lastChatBanterLogLength = 0;
   }
 
-  const newMoveEntries = moveLog.slice(lastChatMoveLogLength).filter(e => e.message);
-  const newBanterEntries = banterLog.slice(lastChatBanterLogLength);
+  const newEntries = moveLog.slice(lastChatMoveLogLength).filter(e => e.chat);
   lastChatMoveLogLength = moveLog.length;
-  lastChatBanterLogLength = banterLog.length;
 
-  const combined = newMoveEntries.concat(newBanterEntries).sort((a, b) => (a.ts || 0) - (b.ts || 0));
-  if (combined.length === 0) return;
+  if (newEntries.length === 0) return;
 
   const stuckToBottom = chatLogEl.scrollTop + chatLogEl.clientHeight >= chatLogEl.scrollHeight - 20;
 
-  for (const entry of combined) {
+  for (const entry of newEntries) {
     const line = document.createElement("div");
     line.className = "chat-line";
     const nameSpan = document.createElement("span");
     nameSpan.className = "chat-name";
     nameSpan.textContent = (entry.name || entry.by || "anonymous") + ": ";
     line.appendChild(nameSpan);
-    line.appendChild(document.createTextNode(entry.message));
-    if (entry.san) {
-      // This one came from move_log — it's chat attached to a move, so
-      // show which move, the same way section 2 of SKILL.md describes it.
-      const moveSpan = document.createElement("span");
-      moveSpan.className = "chat-move";
-      moveSpan.textContent = " (" + entry.san + ")";
-      line.appendChild(moveSpan);
-    }
+    line.appendChild(document.createTextNode(entry.chat));
+    // Every chat line here comes from move_log — show which move it was
+    // attached to, the same way section 2 of SKILL.md describes it.
+    const moveSpan = document.createElement("span");
+    moveSpan.className = "chat-move";
+    moveSpan.textContent = " (" + entry.san + ")";
+    line.appendChild(moveSpan);
     chatLogEl.appendChild(line);
   }
 
@@ -1041,48 +1077,16 @@ function updateChatPanel(state) {
 }
 
 // ---------------------------------------------------------------------
-// Chat input: lets a person at this page send banter (POST /game/chat)
-// when at least one side is 'web-user'. Attributed to that side; if both
-// sides are 'web-user' (a hotseat game), attributed to whichever color
-// is currently on move, the same tie-break used for the resign button
-// (see resignColorFor()) — there's no login to tell two people apart
-// any more precisely than that.
+// Chat input: lets a person at this page type a message that goes out
+// attached to their next move (there's no standalone send — see
+// submitMove()). Shown only while it's currently a 'web-user' side's
+// own turn, since that's the only time a move (and so a chat line) can
+// actually go out.
 // ---------------------------------------------------------------------
-function webUserChatColor(state) {
-  return resignColorFor(state);
-}
-
 function updateChatInput(state) {
-  const color = state.started && !state.game_over ? webUserChatColor(state) : null;
-  chatInputRowEl.style.display = color ? "flex" : "none";
+  const show = state.started && !state.game_over && myTurnIsWebUser(state);
+  chatInputRowEl.style.display = show ? "flex" : "none";
 }
-
-async function sendChat() {
-  const color = webUserChatColor(latestState);
-  const text = chatInputEl.value;
-  if (!color || !text.trim()) return;
-  chatSendBtnEl.disabled = true;
-  try {
-    await fetch("/game/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ color, message: text }),
-    });
-    chatInputEl.value = "";
-    // The new banter arrives through the SSE stream like everything else;
-    // no need to render it here too.
-  } catch (e) {
-    // Leave the typed text in place so nothing is lost; the person can retry.
-  } finally {
-    chatSendBtnEl.disabled = false;
-    chatInputEl.focus();
-  }
-}
-
-chatSendBtnEl.addEventListener("click", sendChat);
-chatInputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") sendChat();
-});
 
 // ---------------------------------------------------------------------
 // Resign / restart button: one button, whose label and effect depend on
@@ -1160,18 +1164,29 @@ async function initStartPanel() {
   const blackLevelRow = document.getElementById("start-black-level-row");
   const whiteLevelSel = document.getElementById("start-white-level");
   const blackLevelSel = document.getElementById("start-black-level");
+  const friendRow = document.getElementById("start-friend-row");
+  const friendL10 = document.getElementById("start-friend-l10");
+  const friendL5 = document.getElementById("start-friend-l5");
   const errEl = document.getElementById("start-error");
   const startBtn = document.getElementById("start-btn");
 
   fillSelect(whiteSel, PLAYER_TYPES, "web-user");
   fillSelect(blackSel, PLAYER_TYPES, "engine");
+  // Defaults mirror game.py's DEFAULT_FRIEND_LIMITS (level 10: 1, level 5: 2).
+  friendL10.value = "1";
+  friendL5.value = "2";
 
   // Each side's level control is independent: an engine-vs-engine game
   // can (and often should, to be an interesting game to watch) pit two
-  // different difficulties against each other.
+  // different difficulties against each other. The "phone a friend"
+  // budget only matters if at least one side will be 'api-user' — it's
+  // set once for the whole game and tracked separately per side (see
+  // POST /api/game/phone-a-friend).
   function refreshLevelVisibility() {
     whiteLevelRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
     blackLevelRow.style.display = blackSel.value === "engine" ? "flex" : "none";
+    const anyApiUser = whiteSel.value === "api-user" || blackSel.value === "api-user";
+    friendRow.style.display = anyApiUser ? "flex" : "none";
   }
   whiteSel.addEventListener("change", refreshLevelVisibility);
   blackSel.addEventListener("change", refreshLevelVisibility);
@@ -1196,6 +1211,10 @@ async function initStartPanel() {
     const body = { white: whiteSel.value, black: blackSel.value };
     if (whiteSel.value === "engine") body.white_level = parseInt(whiteLevelSel.value, 10);
     if (blackSel.value === "engine") body.black_level = parseInt(blackLevelSel.value, 10);
+    if (whiteSel.value === "api-user" || blackSel.value === "api-user") {
+      if (friendL10.value !== "") body.friend_level10_limit = parseInt(friendL10.value, 10);
+      if (friendL5.value !== "") body.friend_level5_limit = parseInt(friendL5.value, 10);
+    }
     try {
       const res = await fetch("/game/start", {
         method: "POST",
@@ -1343,9 +1362,12 @@ def create_viewer_app(game):
         level = body.get("level")
         white_level = body.get("white_level")
         black_level = body.get("black_level")
+        friend_level5_limit = body.get("friend_level5_limit")
+        friend_level10_limit = body.get("friend_level10_limit")
         try:
             state, engine_move = game.new_game(
-                white, black, level=level, white_level=white_level, black_level=black_level
+                white, black, level=level, white_level=white_level, black_level=black_level,
+                friend_level5_limit=friend_level5_limit, friend_level10_limit=friend_level10_limit,
             )
         except GameError as e:
             return _error(str(e))
@@ -1355,11 +1377,11 @@ def create_viewer_app(game):
     def game_move():
         body = request.get_json(silent=True) or {}
         move_str = body.get("move")
-        message = body.get("message")
+        chat = body.get("chat")
         if not move_str:
             return _error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
         try:
-            player_move, engine_move = game.make_move(move_str, message=message)
+            player_move, engine_move = game.make_move(move_str, chat=chat)
         except GameError as e:
             return _error(str(e))
         return jsonify(move=player_move, engine_move=engine_move, state=game.state())
@@ -1389,18 +1411,20 @@ def create_viewer_app(game):
             return _error(str(e))
         return jsonify(state=state)
 
-    @app.post("/game/chat")
-    def game_chat():
-        """Backs the page's chat input (shown when at least one side is
-        'web-user'). Same underlying call as the REST API's
-        POST /api/game/chat."""
-        body = request.get_json(silent=True) or {}
-        color = body.get("color")
-        message = body.get("message")
+    @app.get("/game/transcript")
+    def game_transcript():
+        """Backs the page's "Download transcript" button, shown once the
+        game has ended (see transcriptBtnEl in the JS). Same underlying
+        call as the REST API's GET /api/game/transcript — a downloadable
+        PGN file, not JSON."""
         try:
-            entry = game.send_chat(color, message)
+            pgn = game.transcript()
         except GameError as e:
             return _error(str(e))
-        return jsonify(chat=entry, state=game.state())
+        return Response(
+            pgn,
+            mimetype="application/x-chess-pgn",
+            headers={"Content-Disposition": 'attachment; filename="computer-chess.pgn"'},
+        )
 
     return app

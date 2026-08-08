@@ -40,10 +40,19 @@ Core facts to remember:
   from in-game chat (next bullet) — it is what you tell the person you
   are talking to, in this conversation.
 - **You can set a display name, attach a short chat message to a
-  move, send standalone banter, and record private reasoning.** All
-  four are optional. The first three are visible to your opponent and
-  anyone watching the board viewer. The last is not shared with
-  anyone. See section 2.
+  move, and record private reasoning.** All three are optional. The
+  name and chat are visible to your opponent and anyone watching the
+  board viewer. Reasoning is not shared with anyone while the game is
+  in progress (see the transcript exception in section 2). There is
+  no standalone chat channel — chat always rides along with a move.
+  See section 2.
+- **You can "phone a friend" for a move recommendation, since you are
+  always `"api-user"`.** This asks GNU Chess what it would play in the
+  current position, without submitting that move or ending your turn.
+  Each game gives you a small, separate budget of level-10 and
+  level-5 queries — by default 1 and 2. See section 4.5.
+- **Once the game ends, a PGN transcript is available.** It folds in
+  every move's chat and reasoning. See section 5.1.
 
 ## 1. Starting a new game
 
@@ -83,6 +92,13 @@ Content-Type: application/json
 - `white_name`/`black_name` (each optional) set that side's display
   name for this game. See section 2 for what a name does and how to
   set or change one later, including for a game you did not start.
+- `friend_level5_limit`/`friend_level10_limit` (each optional,
+  integers, default `2` and `1`) set this game's "phone a friend"
+  budget for whichever side ends up `"api-user"` — see section 4.5.
+  Unlike `level`/the name fields above, these are not sticky: every
+  new game gets the defaults unless you set them here, and usage
+  always starts at zero. Raise them if the user wants more hints
+  available, or set either to `0` to turn that tier off entirely.
 - **Two engines watching each other is supported, for a user who wants
   to watch a game rather than play one.** Set both `white` and `black`
   to `"engine"`, optionally with different `white_level` and
@@ -98,7 +114,7 @@ Keep `state`: `state.turn` names the side to move next.
 
 ## 2. Setting your name, chatting, and recording your reasoning
 
-All four features below are optional and cosmetic, with no effect on
+All three features below are optional and cosmetic, with no effect on
 move legality or turn order. Skip whichever ones the user has not
 asked for.
 
@@ -125,60 +141,47 @@ Content-Type: application/json
   set for later games too, until changed again.
 
 **Chat attached to a move.** Attach a short line to a move with the
-`message` field on `POST /api/game/move` (section 4.2):
+`chat` field on `POST /api/game/move` (section 4.2). There is no
+standalone chat channel — every chat line rides along with a move:
 
 ```json
-{"move": "e2e4", "message": "Good luck!"}
+{"move": "e2e4", "chat": "Good luck!"}
 ```
 
-- `message` is up to 240 characters. Longer text is cut short. Leave
-  it out for a normal move with no chat attached.
-- There is no separate inbox. The API stamps your message onto that
+- `chat` is up to 240 characters. Longer text is cut short. Leave it
+  out for a normal move with no chat attached.
+- There is no separate inbox. The API stamps your chat onto that
   move's entry in `move_log`. Your opponent sees it the next time
   they read the game state — the response to their own next move, or
   a plain `GET /api/game`. If your opponent is a person at the board
   viewer, they see it there in a chat panel, next to the move.
-- To read a message from your opponent, check the latest `move_log`
-  entry that is theirs for a `message` field. This is the same place
-  you already look to see what move they made (section 4.1, step 3).
-
-**Banter (chat not attached to a move).** For a message that is not
-about any specific move — a greeting before the game starts, "gg"
-after it ends, anything in between — use:
-
-```
-POST /api/game/chat
-Content-Type: application/json
-
-{"color": "white", "message": "gg, well played"}
-```
-
-- `color` and `message` follow the same rules as above. `message` is
-  still capped at 240 characters, cut short rather than rejected.
-- This also has no separate inbox. Each call adds one entry to
-  `chat_log` in the game state, alongside `move_log`. Read both to
-  see everything said so far — `chat_log` for banter, `move_log`'s
-  `message` fields for chat tied to a move. A person at the board
-  viewer sees your banter in the same chat panel as move-attached
-  chat.
-- Works any time a game exists, even after it has ended — a `"gg"`
-  once the result is in is fine.
+- To read a chat line from your opponent, check the latest `move_log`
+  entry that is theirs for a `chat` field. This is the same place you
+  already look to see what move they made (section 4.1, step 3).
+- If you want to say something not really about the move — a
+  greeting before the game starts, "gg" once it's decided — attach it
+  to whatever move you're submitting anyway (your first move, or your
+  last one before resigning). There's no way to send chat without
+  submitting a move alongside it.
 
 **Private reasoning.** `reasoning` (optional, up to 1000 characters,
 also cut short rather than rejected) is a second field on
-`POST /api/game/move`, alongside `message`:
+`POST /api/game/move`, alongside `chat`:
 
 ```json
 {"move": "e2e4", "reasoning": "e4 grabs the center and opens lines for the bishop and queen."}
 ```
 
-- Unlike `message`, `reasoning` is never returned by any endpoint. It
-  is kept only on the server. It is not shown to your opponent,
-  anyone at the board viewer, or even back to you on a later read.
-  Use it if the user wants their move-by-move thinking recorded for
-  later review. This is separate from what you say to them directly
-  (the "narrate your thinking" core fact above), and separate from
-  `message`, which your opponent does see.
+- Unlike `chat`, `reasoning` is never returned by any endpoint while
+  the game is in progress. It is kept only on the server. It is not
+  shown to your opponent, anyone at the board viewer, or even back to
+  you on a later read — with one exception: once the game ends, it is
+  folded into that game's PGN transcript (section 5.1), since there
+  is no longer any ongoing advantage to protect. Use it if the user
+  wants their move-by-move thinking recorded for later review. This
+  is separate from what you say to them directly (the "narrate your
+  thinking" core fact above), and separate from `chat`, which your
+  opponent does see immediately.
 - This is unrelated to the plain-language explanation you already
   give the user before each move (section 4.1, step 4). Giving one
   does not excuse skipping the other.
@@ -244,21 +247,19 @@ For each of your turns, repeat this loop:
    `engine_move`, or a new `move_log` entry from your opponent. If you
    find one, tell the user what you think it aims to do, in plain
    language. Do this every time, before you plan your own move. Also
-   check that entry for a `message` field (section 2). If it has one,
+   check that entry for a `chat` field (section 2). If it has one,
    treat it as a chat line from your opponent and react to it too.
-   Separately, check `chat_log` for any new banter (section 2) —
-   banter can arrive between your turns, not only alongside a move.
 4. Choose a legal move. Before you submit it, tell the user the
    theory behind it: explain what it does for your position, and why
    you picked it over the alternatives. Give this explanation every
    time, not only when the move looks unusual. Optionally, also give
-   the move a short `message` (section 2): a greeting, a comment on
-   the position, anything brief.
+   the move a short `chat` (section 2): a greeting, a comment on the
+   position, anything brief.
 5. Submit the move with curl:
    ```bash
    curl -X POST http://10.0.2.2:5003/api/game/move \
      -H 'Content-Type: application/json' \
-     -d '{"move": "e2e4", "message": "Good luck!"}'
+     -d '{"move": "e2e4", "chat": "Good luck!"}'
    ```
 6. Repeat from step 1 until the game ends (section 5).
 
@@ -283,21 +284,21 @@ promotion), `san` (for example, `"e4"`, `"Nf3"`, `"O-O"`), `from`,
 `to`, and `promotion`.
 
 Submit a move. UCI and SAN both work. Prefer UCI, because it has only
-one meaning. `message` and `reasoning` (both optional, section 2)
+one meaning. `chat` and `reasoning` (both optional, section 2)
 attach a chat line and a private note, respectively:
 
 ```
 POST /api/game/move
 Content-Type: application/json
 
-{"move": "e2e4", "message": "Good luck!", "reasoning": "e4 grabs the center"}
+{"move": "e2e4", "chat": "Good luck!", "reasoning": "e4 grabs the center"}
 ```
 
 Response:
 
 ```json
 {
-  "move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "message": "Good luck!"},
+  "move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"},
   "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine", "name": "GNU Chess"} ,
   "state": {...}
 }
@@ -305,7 +306,7 @@ Response:
 
 - `move` echoes back what you submitted, with `name` (your current
   display name, or `null` if you have not set one — section 2) and
-  `message` (only present if you sent one) added.
+  `chat` (only present if you sent one) added.
 - `engine_move` is set (non-null) only when it becomes an `"engine"`
   side's turn immediately after your move. The API computes and
   applies the engine's reply in this same call. Read it: this is the
@@ -366,10 +367,75 @@ if you prefer it to either option above.
 `GET http://10.0.2.2:5004/` is an HTML board. It updates live through
 Server-Sent Events, with no manual refresh, for a user who wants to
 watch. A person there can also start a game, play a `"web-user"` side
-by clicking the board, send banter of their own, or end the game
-early with a Resign or Restart button — but that is a person acting
-through the browser, not you. When you act on the game, always use
-the REST API (port 5003) as described in this skill.
+by clicking the board, type a chat line to go out with their next
+move, or end the game early with a Resign or Restart button — but
+that is a person acting through the browser, not you. When you act on
+the game, always use the REST API (port 5003) as described in this
+skill.
+
+### 4.5 Phoning a friend
+
+You can ask GNU Chess what it would play in the current position,
+without submitting that move — a hint for a hard decision, not a
+substitute for choosing and submitting your own move (section 4.1,
+step 4-5). This is only available to you, the `"api-user"` side, and
+only on your own turn.
+
+```
+POST /api/game/phone-a-friend
+Content-Type: application/json
+
+{"level": 10}
+```
+
+- `level` is `5` or `10` — no other values. Level 10 searches deeper
+  and gives a stronger recommendation; level 5 is quicker and weaker.
+  Pick 10 for a critical, hard-to-read position; 5 is enough for a
+  routine check.
+- Each level has its own budget for the whole game, set when the game
+  was started (`friend_level5_limit`/`friend_level10_limit`, section
+  1; default `2` for level 5 and `1` for level 10). Budgets are
+  tracked separately per side, so in a two-`"api-user"` game your
+  budget is independent of your opponent's.
+- Calling this does **not** change the board, does **not** end your
+  turn, and does **not** count as your move. You must still submit a
+  move yourself via `POST /api/game/move` (section 4.2) afterward,
+  whether or not you take the suggestion.
+
+Response:
+
+```json
+{
+  "advice": {"level": 10, "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},
+  "state": {...}
+}
+```
+
+- `advice.uci`/`advice.san` is the recommended move, in both
+  notations (section 4.2 explains the difference). `advice.used`,
+  `advice.limit`, and `advice.remaining` tell you how much of that
+  level's budget you've now used, its total, and what's left.
+- `state` is the full, current game state — unchanged by this call
+  except for `state.phone_a_friend`, which always shows both sides'
+  budget and usage at both levels, whether or not you've called this
+  endpoint yet:
+  ```json
+  "phone_a_friend": {
+    "limits": {"level_5": 2, "level_10": 1},
+    "white": {"used": {"level_5": 0, "level_10": 1}, "remaining": {"level_5": 2, "level_10": 0}},
+    "black": {"used": {"level_5": 0, "level_10": 0}, "remaining": {"level_5": 2, "level_10": 1}}
+  }
+  ```
+- `400` means it was not your turn, your side is not `"api-user"`
+  (should not happen — you always are), `level` was not `5` or `10`,
+  or you have no queries left at that level. Read the `error` field.
+  If you are out of budget at one level, either try the other level
+  (if you still have queries there) or just decide on your own.
+- Using this is optional. Only call it when it would actually help —
+  a genuinely hard or unclear position — not on every move; your
+  budget is small by design. When you do use it and then move, feel
+  free to mention to the user that you asked for a hint, as part of
+  your normal narration (the "always narrate" core fact above).
 
 ## 5. Recognizing the end of a game
 
@@ -409,3 +475,27 @@ the move history yourself.
   for example "Checkmate — black wins" or "Draw by stalemate", not the
   raw status string. Offer to start a new game (section 1) if the user
   wants to keep playing.
+
+### 5.1 Downloading a transcript
+
+Once the game has ended (and only then), a PGN (Portable Game
+Notation) transcript is available — the standard plain-text chess
+format read by lichess.org, chess.com, and most chess software:
+
+```
+GET /api/game/transcript
+```
+
+- Returns the raw PGN text (not JSON) — metadata as tag pairs at the
+  top (players, result, engine levels where relevant, how the game
+  ended), then the move list.
+- Every move's `chat` (section 2) and any private `reasoning` you
+  recorded for it (also section 2) are folded in as a comment on that
+  move. This is the one place `reasoning` is ever exposed — once the
+  game is over there's no ongoing advantage left to protect.
+- `400` means no game has started, or the current game is still in
+  progress — this only works after `state.game_over` is `true`.
+- If the user asks for a copy of the game, a way to review it later,
+  or to see their own private reasoning written out, this is the
+  endpoint. Fetch it and share the contents (or save it to a file
+  named something like `game.pgn`, if you have file access).
