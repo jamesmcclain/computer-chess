@@ -1,10 +1,11 @@
 # computer-chess
 
 computer-chess is a dockerized chess server. GNU Chess runs inside an
-Ubuntu container. A JSON REST API controls the game. The server supports
-two setups: two API users that submit moves through the API, or one API
-user against GNU Chess. A separate, read-only web page shows the current
-board.
+Ubuntu container. A JSON REST API controls the game. A side is an API
+user (an outside caller that submits moves through the API), a web
+user (a person playing through the board viewer), or GNU Chess itself.
+A separate web page shows the current board, and also lets a person
+start a game or play a web-user side.
 
 Only one game is active at a time. A new game replaces the previous
 game. No endpoint uses authentication.
@@ -23,7 +24,7 @@ Or run `./run.sh` instead.
 Then use these addresses:
 
 - REST API: `http://localhost:5003/api` (see below).
-- Board viewer (read-only): `http://localhost:5004/`.
+- Board viewer: `http://localhost:5004/`.
 
 ## REST API (port 5003)
 
@@ -36,10 +37,11 @@ same reference as JSON.
 {"white": "api-user", "black": "engine", "level": 5}
 ```
 
-`white` and `black` are each `"api-user"` (an API user that submits
-moves through this API) or `"engine"` (GNU Chess). At least one side
-must be `"api-user"`. The server supports two API users, or one API user
-against GNU Chess. GNU Chess against itself is not supported.
+`white` and `black` are each one of three types: `"api-user"` (an API
+user that submits moves through this API), `"engine"` (GNU Chess), or
+`"web-user"` (a person playing through the board viewer on port 5004,
+by clicking the board). Both sides cannot be `"engine"`. Every other
+combination is supported, including two API users or two web users.
 
 `level` (optional, `1`-`10`, weakest to strongest) sets the difficulty of
 GNU Chess for this game. Omit `level` to keep the last value (default
@@ -150,15 +152,42 @@ winner.
 
 ## Board viewer (port 5004)
 
-`GET /` returns a view-only HTML page. The page shows the current board
-and updates live. The page has no controls for moves. The browser
-receives updates through Server-Sent Events (`GET /events`) the instant
-the game changes, instead of on a fixed timer. The page keeps one open
-connection and repaints only the squares that changed, so there is no
-flash or reload.
+`GET /` returns an HTML page. The page shows the current board and
+updates live. The browser receives updates through Server-Sent Events
+(`GET /events`) the instant the game changes, instead of on a fixed
+timer. The page keeps one open connection and repaints only the
+squares that changed, so there is no flash or reload.
 
 `GET /state` is also available for a single fetch. The page uses
 `GET /state` as a fallback when SSE is not available.
+
+**Starting a game.** When no game is in progress, including right
+after a game finishes, the page shows a form to start one. A person
+picks a type for White and a type for Black:
+
+- `api-user` — moves come from the REST API (an agent, or curl).
+- `engine` — GNU Chess plays this side.
+- `web-user` — the person at this page plays this side, by clicking
+  the board (see below).
+
+If either side is `engine`, the form also shows a difficulty level.
+This form supports every combination the API supports:
+
+- Two API users.
+- An API user against the engine.
+- A web user against the engine.
+- A web user against an API user.
+
+**Playing as a web user.** When it is a `web-user` side's turn, the
+page lets that person click a piece. Then the person clicks a
+highlighted square to move there. If the move is a promotion, the page
+shows a small picker for the piece to promote to.
+
+The page's own `/game/start`, `/game/move`, and `/game/legal-moves`
+routes back these two features. They call the same `ChessGame` object
+as the REST API (port 5003), so they enforce the same rules. They exist
+only so the page's own JS can act on the game from its own origin.
+`api.py` (port 5003) stays the reference for programmatic play.
 
 **Appearance.** The page includes controls for the board style and the
 piece style.

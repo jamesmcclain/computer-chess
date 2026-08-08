@@ -13,10 +13,11 @@ API_DOC = {
                     "game replaces any game already in progress.",
     "endpoints": {
         "POST /api/game": {
-            "body": {"white": "api-user|engine", "black": "api-user|engine",
+            "body": {"white": "api-user|web-user|engine", "black": "api-user|web-user|engine",
                      "level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional"},
-            "description": "Start a new game. At least one side must be "
-                            "'api-user'. 'level' sets gnuchess's difficulty "
+            "description": "Start a new game, replacing any game already "
+                            "in progress. Both sides cannot be 'engine'. "
+                            "'level' sets gnuchess's difficulty "
                             "for this game (omit to keep whatever level "
                             "was last set); see GET /api/engine-levels. "
                             "If white is 'engine', gnuchess's opening "
@@ -50,7 +51,9 @@ API_DOC = {
                             "on the engine's next move.",
         },
     },
-    "viewer": "A read-only board viewer is served separately on port 5004.",
+    "viewer": "A board viewer is served separately on port 5004. It shows "
+              "the game live and also lets a person start a game or play "
+              "as 'web-user' by clicking the board — see that page.",
 }
 
 

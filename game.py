@@ -1,7 +1,7 @@
 """Core chess game state, plus GNU Chess engine integration.
 
 This module has no Flask/HTTP dependency; it's the shared, thread-safe
-model that both the REST API (port 5003) and the read-only viewer
+model that both the REST API (port 5003) and the board viewer
 (port 5004) sit on top of. Only one game exists at a time, per spec:
 starting a new game replaces whatever game was previously in progress.
 
@@ -46,6 +46,18 @@ LEVEL_TUNING = {
     9:  {"depth": 12, "time": 3.5},
     10: {"depth": 15, "time": 5.0},
 }
+
+# A side is one of three types:
+#   "api-user" — moves come from the REST API (port 5003), e.g. an agent or curl.
+#   "web-user"  — moves come from a person clicking the board in the browser
+#                 viewer (port 5004).
+#   "engine"    — GNU Chess plays this side automatically.
+# "api-user" and "web-user" behave identically to the game itself (both are
+# just "a move shows up for this side eventually"); the distinction only
+# matters for display (the "by" field on a move, and which side the viewer's
+# click-to-move UI lets the current browser act on). At least one side must
+# not be "engine" — two engines playing each other is not supported.
+PLAYER_TYPES = ("api-user", "web-user", "engine")
 
 
 def describe_levels():
@@ -92,8 +104,8 @@ class ChessGame:
         self._engine = None
 
         self.board = chess.Board()
-        self.white_type = None       # "api-user" | "engine"
-        self.black_type = None       # "api-user" | "engine"
+        self.white_type = None       # "api-user" | "web-user" | "engine"
+        self.black_type = None       # "api-user" | "web-user" | "engine"
         self.started = False
         self.result_reason = None    # set to "resigned" on resignation
         self.resigned_by = None      # "white" | "black"
@@ -123,20 +135,20 @@ class ChessGame:
     # ---- game lifecycle -----------------------------------------------------
 
     def new_game(self, white, black, level=None):
-        """Start a fresh game. `white`/`black` are each 'api-user' or 'engine'.
-        `level` (optional, 1-10) sets GNU Chess's difficulty for this
-        game; if omitted, whatever level was last set (or the default)
-        carries over. Returns (state_dict, engine_move_or_None) —
-        engine_move is set if white is 'engine', since it then moves
-        immediately."""
+        """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
+        ('api-user', 'web-user', 'engine'). `level` (optional, 1-10) sets
+        GNU Chess's difficulty for this game; if omitted, whatever level
+        was last set (or the default) carries over. Returns (state_dict,
+        engine_move_or_None) — engine_move is set if white is 'engine',
+        since it then moves immediately."""
         white = (white or "").strip().lower()
         black = (black or "").strip().lower()
-        if white not in ("api-user", "engine") or black not in ("api-user", "engine"):
-            raise GameError("'white' and 'black' must each be 'api-user' or 'engine'")
+        if white not in PLAYER_TYPES or black not in PLAYER_TYPES:
+            raise GameError(f"'white' and 'black' must each be one of: {', '.join(PLAYER_TYPES)}")
         if white == "engine" and black == "engine":
             raise GameError(
-                "at least one side must be 'api-user' — this server supports two "
-                "outside players, or one outside player against gnuchess"
+                "both sides cannot be 'engine' — set at least one side to "
+                "'api-user' or 'web-user'"
             )
         if level is not None:
             level = self._validate_level(level)
@@ -350,16 +362,19 @@ class ChessGame:
             return moves
 
     def make_move(self, move_str):
-        """Submit a move for whichever side is currently to move. Returns
-        (player_move_entry, engine_move_entry_or_None) — the engine entry
-        is set if, after this move, it becomes an 'engine' side's turn and
+        """Submit a move for whichever side is currently to move — works
+        the same whether that side is 'api-user' or 'web-user'; only
+        'engine' turns are rejected here (gnuchess moves itself). Returns
+        (player_move_entry, engine_entry_or_None) — the engine entry is
+        set if, after this move, it becomes an 'engine' side's turn and
         gnuchess replies immediately."""
         with self._lock:
             if not self.started:
                 raise GameError("no game in progress; POST /api/game to start one")
             if self._status() != "in_progress":
                 raise GameError(f"game is not in progress (status: {self._status()})")
-            if self._current_player_type() != "api-user":
+            mover_type = self._current_player_type()
+            if mover_type == "engine":
                 raise GameError("it is the engine's turn; wait for its move")
 
             move = self._parse_move(move_str)
@@ -367,7 +382,7 @@ class ChessGame:
             san = self.board.san(move)
             uci = move.uci()
             self.board.push(move)
-            player_entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san, "by": "api-user"}
+            player_entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san, "by": mover_type}
             self.move_log.append(player_entry)
 
             engine_entry = None

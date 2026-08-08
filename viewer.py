@@ -1,8 +1,7 @@
-"""Read-only web viewer (port 5004).
+"""Web viewer (port 5004).
 
-Shows the current board state only — no controls, no way to submit
-moves. Updates are pushed to the browser over Server-Sent Events (SSE)
-rather than polled on a fixed interval: the server blocks (via
+Shows the current board live over Server-Sent Events (SSE) rather than
+polled on a fixed interval: the server blocks (via
 `ChessGame.wait_for_change`) until the game actually changes, then
 streams the new state down an open `/events` connection. The client only
 rewrites the board squares that actually changed piece, instead of
@@ -12,10 +11,27 @@ per-square-teardown was the source of the old polling viewer's
 their onerror fallback kicks in, even when nothing on that square
 changed).
 
-SSE was chosen over WebSockets because this is a one-way, server-to-
-client feed (the viewer can't send anything back) — a plain HTTP
-streaming response covers that with no extra protocol, dependency, or
-handshake, and works with Flask's built-in dev server out of the box.
+SSE was chosen over WebSockets because the live-board feed is one-way,
+server-to-client (`/events`) — a plain HTTP streaming response covers
+that with no extra protocol, dependency, or handshake, and works with
+Flask's built-in dev server out of the box.
+
+This page is not purely read-only: when no game is in progress
+(including after a previous one has finished), it offers a form to
+start one, letting a person pick each side's type — 'api-user' (an
+outside caller, e.g. an agent), 'engine' (GNU Chess), or 'web-user'
+(play by clicking this page) — plus GNU Chess's difficulty if either
+side is 'engine'. While a game is running, if it is a 'web-user'
+side's turn, this page also lets a person click a piece and a
+destination square to submit that side's move.
+
+The `/game/*` routes below exist only so this page's own JS can start
+games and submit moves same-origin, without depending on the REST API's
+host/port (which can be remapped independently — see run.sh). They are
+thin wrappers over the same shared `ChessGame` object the REST API
+(port 5003, api.py) uses, so behavior and validation are identical
+either way; the REST API remains the one to use for programmatic play
+(see SKILL.md).
 
 Appearance (board squares + piece art) is a purely client-side, per-
 browser preference: it's read from the theme catalogue below, picked
@@ -27,7 +43,9 @@ game can each see their own board/piece styles.
 import json
 import os
 
-from flask import Flask, Response, jsonify, render_template_string, stream_with_context
+from flask import Flask, Response, jsonify, render_template_string, request, stream_with_context
+
+from game import GameError, describe_levels
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -105,7 +123,7 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GNU Chess &mdash; board viewer</title>
+<title>computer-chess &mdash; board viewer</title>
 <style>
   :root {
     --light: #f0d9b5; --dark: #b58863; --accent: #e0b84f;
@@ -155,6 +173,54 @@ PAGE = """<!doctype html>
   }
   select:focus { outline: 1px solid var(--accent); }
 
+  /* ---- start-a-game panel ------------------------------------------------
+     Shown whenever no game is in progress (never started, or the last
+     one finished) — see needsStart() in the JS below. */
+  #start-panel {
+    display: none;
+    flex-direction: column; gap: 0.6rem; align-items: stretch;
+    background: var(--panel-bg); border: 1px solid var(--panel-border);
+    border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 1rem;
+    width: 100%; max-width: 360px;
+  }
+  #start-panel h2 { margin: 0 0 0.2rem; font-size: 0.95rem; font-weight: 600; color: #ddd; }
+  .start-row { display: flex; align-items: center; gap: 0.6rem; }
+  .start-row label { color: #aaa; font-size: 0.82rem; width: 5rem; flex-shrink: 0; }
+  .start-row select { font-size: 0.85rem; }
+  #start-btn {
+    all: unset; cursor: pointer; text-align: center; margin-top: 0.3rem;
+    background: var(--accent); color: #1a1a1a; font-weight: 600; font-size: 0.85rem;
+    padding: 0.5rem; border-radius: 6px;
+  }
+  #start-btn:hover { filter: brightness(1.08); }
+  #start-error { color: #e07a7a; font-size: 0.78rem; min-height: 1em; }
+
+  /* ---- click-to-move -------------------------------------------------- */
+  #board.interactive .sq.movable { cursor: pointer; }
+  #board.interactive .sq.movable:hover { filter: brightness(1.12); }
+  .sq.selected { box-shadow: inset 0 0 0 3px var(--accent); }
+  .sq.legal-target { cursor: pointer; }
+  .sq.legal-target::after {
+    content: ""; position: absolute; width: 26%; height: 26%; border-radius: 50%;
+    background: rgba(224, 184, 79, 0.85); pointer-events: none;
+  }
+  .sq.legal-target.has-piece::after {
+    width: 92%; height: 92%; border-radius: 50%; background: transparent;
+    box-shadow: inset 0 0 0 4px rgba(224, 184, 79, 0.85);
+  }
+  #promo-picker {
+    display: none; position: absolute; z-index: 10;
+    background: var(--panel-bg); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 0.3rem; box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+    gap: 0.25rem;
+  }
+  #promo-picker button {
+    all: unset; cursor: pointer; width: 2.2rem; height: 2.2rem; display: flex;
+    align-items: center; justify-content: center; border-radius: 6px;
+    background: #1a1a1a; font-size: 1.3rem;
+  }
+  #promo-picker button:hover { background: var(--accent); color: #1a1a1a; }
+
   /* ---- board ------------------------------------------------------------
      Sized in JS (via ResizeObserver) to the largest square that fits the
      viewport, so it scales smoothly as the window is resized rather than
@@ -189,9 +255,20 @@ PAGE = """<!doctype html>
 </style>
 </head>
 <body>
-  <h1>GNU Chess &mdash; board viewer (read only)</h1>
+  <h1>computer-chess &mdash; board viewer</h1>
   <div id="conn">connecting&hellip;</div>
   <div id="status"></div>
+
+  <div id="start-panel">
+    <h2>Start a new game</h2>
+    <div class="start-row"><label>White</label><select id="start-white"></select></div>
+    <div class="start-row"><label>Black</label><select id="start-black"></select></div>
+    <div class="start-row" id="start-level-row" style="display:none;">
+      <label>Engine level</label><select id="start-level"></select>
+    </div>
+    <button id="start-btn">Start game</button>
+    <div id="start-error"></div>
+  </div>
 
   <div id="controls">
     <div class="ctrl-group">
@@ -229,7 +306,7 @@ PAGE = """<!doctype html>
     </div>
   </div>
 
-  <div id="board-wrap"><div id="board"></div></div>
+  <div id="board-wrap"><div id="board"></div><div id="promo-picker"></div></div>
   <div id="meta"></div>
 <script>
 const UNICODE = {
@@ -237,18 +314,35 @@ const UNICODE = {
   bP: "\\u265F", bN: "\\u265E", bB: "\\u265D", bR: "\\u265C", bQ: "\\u265B", bK: "\\u265A"
 };
 const TYPE_NAMES = { P: "pawn", N: "knight", B: "bishop", R: "rook", Q: "queen", K: "king" };
+const FILES = "abcdefgh";
+
+const PLAYER_TYPES = [
+  { id: "api-user", label: "API user" },
+  { id: "engine", label: "Engine (GNU Chess)" },
+  { id: "web-user", label: "Web user (you)" },
+];
 
 const boardWrapEl = document.getElementById("board-wrap");
 const boardEl = document.getElementById("board");
 const statusEl = document.getElementById("status");
 const metaEl = document.getElementById("meta");
 const connEl = document.getElementById("conn");
+const startPanelEl = document.getElementById("start-panel");
+const promoPickerEl = document.getElementById("promo-picker");
 
 // cellEls[r][c] = the .sq div. lastCodes[r][c] = piece code last painted
 // there ("wN", etc.) or null. Built once; reused across every update so
 // unchanged squares are never touched.
 let cellEls = null;
 let lastCodes = null;
+let latestState = null; // most recent state from render(), used by click-to-move
+
+// Click-to-move state: the square a person just clicked (algebraic, e.g.
+// "e2"), and a map of "to square" -> [legal move, ...] for it (more than
+// one entry only happens for a promotion, where several pieces are
+// offered for the same destination square).
+let selectedSquare = null;
+let legalTargets = {};
 
 // ---------------------------------------------------------------------
 // Style state: persisted in localStorage so it's remembered per-browser
@@ -403,6 +497,8 @@ function buildBoard() {
       const sq = document.createElement("div");
       const light = (r + c) % 2 === 0;
       sq.className = "sq " + (light ? "light" : "dark");
+      sq.dataset.square = squareName(r, c);
+      sq.addEventListener("click", () => onSquareClick(r, c));
       boardEl.appendChild(sq);
       rowEls.push(sq);
       rowCodes.push(undefined); // undefined = "never painted" (forces first paint)
@@ -410,6 +506,138 @@ function buildBoard() {
     cellEls.push(rowEls);
     lastCodes.push(rowCodes);
   }
+}
+
+// ---------------------------------------------------------------------
+// Click-to-move (for a "web-user" side's turn only — an "api-user" or
+// "engine" turn ignores clicks; nothing here changes who can call the
+// REST API directly, this only gates this page's own UI affordance).
+// ---------------------------------------------------------------------
+function squareName(r, c) {
+  // row 0 = rank 8 (see game.py's _board_grid), column 0 = file a.
+  return FILES[c] + String(8 - r);
+}
+
+function squareToRC(square) {
+  const file = square[0];
+  const rank = parseInt(square.slice(1), 10);
+  return [8 - rank, FILES.indexOf(file)];
+}
+
+function myTurnIsWebUser(state) {
+  return !!(state && state.started && !state.game_over && state.players[state.turn] === "web-user");
+}
+
+function clearSelection() {
+  selectedSquare = null;
+  legalTargets = {};
+  if (cellEls) {
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        cellEls[r][c].classList.remove("selected", "legal-target", "has-piece");
+      }
+    }
+  }
+  hidePromotionPicker();
+}
+
+function updateInteractivity(state) {
+  boardEl.classList.toggle("interactive", myTurnIsWebUser(state));
+  if (!cellEls) return;
+  const canMove = myTurnIsWebUser(state);
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const cell = state.started ? state.board[r][c] : null;
+      const movable = canMove && cell && cell.color === state.turn;
+      cellEls[r][c].classList.toggle("movable", !!movable);
+    }
+  }
+}
+
+async function onSquareClick(r, c) {
+  if (!myTurnIsWebUser(latestState)) return;
+  const sq = squareName(r, c);
+  const cell = latestState.board[r][c];
+  const sideToMove = latestState.turn;
+
+  if (selectedSquare && legalTargets[sq]) {
+    const moves = legalTargets[sq];
+    const chosen = moves.length === 1 ? moves[0] : null;
+    clearSelection();
+    if (chosen) {
+      await submitMove(chosen.uci);
+    } else {
+      showPromotionPicker(r, c, moves);
+    }
+    return;
+  }
+
+  clearSelection();
+  if (cell && cell.color === sideToMove) {
+    selectedSquare = sq;
+    cellEls[r][c].classList.add("selected");
+    try {
+      const res = await fetch(`/game/legal-moves?from=${encodeURIComponent(sq)}`);
+      const data = await res.json();
+      for (const m of data.moves || []) {
+        (legalTargets[m.to] = legalTargets[m.to] || []).push(m);
+      }
+      for (const toSquare of Object.keys(legalTargets)) {
+        const target = document.querySelector(`.sq[data-square="${toSquare}"]`);
+        if (!target) continue;
+        target.classList.add("legal-target");
+        const [tr, tc] = squareToRC(toSquare);
+        if (latestState.board[tr][tc]) target.classList.add("has-piece");
+      }
+    } catch (e) {
+      clearSelection();
+    }
+  }
+}
+
+async function submitMove(uci) {
+  try {
+    const res = await fetch("/game/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ move: uci }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      statusEl.textContent = data.error || "That move was rejected.";
+    }
+    // On success, the new state arrives through the SSE stream — no
+    // need to render it here too.
+  } catch (e) {
+    statusEl.textContent = "Could not reach the server to submit that move.";
+  }
+}
+
+function hidePromotionPicker() {
+  promoPickerEl.style.display = "none";
+  promoPickerEl.innerHTML = "";
+}
+
+const PROMO_GLYPH = { Q: "\\u265B", R: "\\u265C", B: "\\u265D", N: "\\u265E" };
+
+function showPromotionPicker(r, c, moves) {
+  promoPickerEl.innerHTML = "";
+  for (const move of moves) {
+    const btn = document.createElement("button");
+    btn.textContent = PROMO_GLYPH[move.promotion] || move.promotion || "?";
+    btn.title = move.san;
+    btn.addEventListener("click", () => {
+      hidePromotionPicker();
+      submitMove(move.uci);
+    });
+    promoPickerEl.appendChild(btn);
+  }
+  const sqEl = cellEls[r][c];
+  const wrapRect = boardWrapEl.getBoundingClientRect();
+  const sqRect = sqEl.getBoundingClientRect();
+  promoPickerEl.style.left = (sqRect.left - wrapRect.left) + "px";
+  promoPickerEl.style.top = (sqRect.top - wrapRect.top - 48) + "px";
+  promoPickerEl.style.display = "flex";
 }
 
 function paintCell(sq, code) {
@@ -438,16 +666,26 @@ function paintCell(sq, code) {
 }
 
 function render(state) {
+  latestState = state;
+  clearSelection(); // any server-pushed state invalidates a local selection
+
+  // Offer the start-game form whenever there's no game to watch — never
+  // started, or the last one already finished.
+  const needsStart = !state.started || state.game_over;
+  startPanelEl.style.display = needsStart ? "flex" : "none";
+
   if (!state.started) {
     boardEl.innerHTML = "";
     cellEls = null;
     lastCodes = null;
+    boardWrapEl.style.display = "none";
     statusEl.className = "";
-    statusEl.textContent = "No game in progress.";
-    metaEl.textContent = "Start one via POST /api/game on port 5003.";
+    statusEl.textContent = "No game in progress. Start one below.";
+    metaEl.textContent = "";
     return;
   }
 
+  boardWrapEl.style.display = "flex";
   if (!cellEls) buildBoard();
 
   for (let r = 0; r < 8; r++) {
@@ -460,15 +698,19 @@ function render(state) {
       }
     }
   }
+  updateInteractivity(state);
 
   let text = (state.turn === "white" ? "White" : "Black") + " to move";
   statusEl.className = "";
   if (state.game_over) {
     text = "Game over \\u2014 " + state.status.replace(/_/g, " ");
     if (state.winner) text += " (" + state.winner + " wins)";
+    text += ". Start a new game below to keep playing.";
     statusEl.className = "over";
   } else if (state.in_check) {
     text += " \\u2014 check!";
+  } else if (myTurnIsWebUser(state)) {
+    text += " \\u2014 your move: click a piece, then a highlighted square";
   }
   statusEl.textContent = text;
 
@@ -497,6 +739,60 @@ new ResizeObserver(fitBoard).observe(boardWrapEl);
 window.addEventListener("resize", fitBoard);
 
 // ---------------------------------------------------------------------
+// Start-a-new-game panel
+// ---------------------------------------------------------------------
+async function initStartPanel() {
+  const whiteSel = document.getElementById("start-white");
+  const blackSel = document.getElementById("start-black");
+  const levelRow = document.getElementById("start-level-row");
+  const levelSel = document.getElementById("start-level");
+  const errEl = document.getElementById("start-error");
+  const startBtn = document.getElementById("start-btn");
+
+  fillSelect(whiteSel, PLAYER_TYPES, "web-user");
+  fillSelect(blackSel, PLAYER_TYPES, "engine");
+
+  function refreshLevelVisibility() {
+    const needsLevel = whiteSel.value === "engine" || blackSel.value === "engine";
+    levelRow.style.display = needsLevel ? "flex" : "none";
+  }
+  whiteSel.addEventListener("change", refreshLevelVisibility);
+  blackSel.addEventListener("change", refreshLevelVisibility);
+  refreshLevelVisibility();
+
+  const fallbackLevels = Array.from({ length: 10 }, (_, i) => ({ id: String(i + 1), label: "Level " + (i + 1) }));
+  try {
+    const res = await fetch("/game/engine-levels");
+    const data = await res.json();
+    const options = (data.levels || []).map(l => ({ id: String(l.level), label: "Level " + l.level }));
+    fillSelect(levelSel, options.length ? options : fallbackLevels, String(data.default || 5));
+  } catch (e) {
+    fillSelect(levelSel, fallbackLevels, "5");
+  }
+
+  startBtn.addEventListener("click", async () => {
+    errEl.textContent = "";
+    startBtn.textContent = "Starting\\u2026";
+    const body = { white: whiteSel.value, black: blackSel.value };
+    if (levelRow.style.display !== "none") body.level = parseInt(levelSel.value, 10);
+    try {
+      const res = await fetch("/game/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) errEl.textContent = data.error || "Could not start the game.";
+      // On success, the new state arrives through the SSE stream.
+    } catch (e) {
+      errEl.textContent = "Could not reach the server.";
+    } finally {
+      startBtn.textContent = "Start game";
+    }
+  });
+}
+
+// ---------------------------------------------------------------------
 // Boot: load the style catalogue, wire up controls, then start the feed
 // ---------------------------------------------------------------------
 async function boot() {
@@ -508,6 +804,7 @@ async function boot() {
     // still works fine without it.
   }
   initControls();
+  await initStartPanel();
   fitBoard();
   startFeed();
 }
@@ -597,5 +894,53 @@ def create_viewer_app(game):
                 "Connection": "keep-alive",
             },
         )
+
+    # ---- routes behind this page's own start-game / click-to-move UI ----
+    # These are thin wrappers over the same shared `game` object the REST
+    # API (port 5003, api.py) uses — same validation, same effect on the
+    # game. They exist only so this page's JS can call them same-origin;
+    # see the module docstring above for why. Kept out of api.py's
+    # request/response shape so that reference stays exactly what an
+    # agent following SKILL.md sees, with nothing viewer-specific in it.
+
+    def _error(message, status=400):
+        return jsonify(error=message), status
+
+    @app.get("/game/engine-levels")
+    def game_engine_levels():
+        return jsonify(describe_levels())
+
+    @app.post("/game/start")
+    def game_start():
+        body = request.get_json(silent=True) or {}
+        white = body.get("white", "web-user")
+        black = body.get("black", "engine")
+        level = body.get("level")
+        try:
+            state, engine_move = game.new_game(white, black, level=level)
+        except GameError as e:
+            return _error(str(e))
+        return jsonify(state=state, engine_move=engine_move), 201
+
+    @app.post("/game/move")
+    def game_move():
+        body = request.get_json(silent=True) or {}
+        move_str = body.get("move")
+        if not move_str:
+            return _error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
+        try:
+            player_move, engine_move = game.make_move(move_str)
+        except GameError as e:
+            return _error(str(e))
+        return jsonify(move=player_move, engine_move=engine_move, state=game.state())
+
+    @app.get("/game/legal-moves")
+    def game_legal_moves():
+        from_square = request.args.get("from")
+        try:
+            moves = game.legal_moves(from_square)
+        except GameError as e:
+            return _error(str(e), 404 if "no game" in str(e) else 400)
+        return jsonify(moves=moves, count=len(moves))
 
     return app

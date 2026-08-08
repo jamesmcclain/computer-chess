@@ -7,7 +7,8 @@
 #   docker run -it --rm -p 5003:5003 -p 5004:5004 computer-chess
 #
 # Port 5003: REST API (start games, submit moves, query state — no auth).
-# Port 5004: read-only web viewer of the current board (no input).
+# Port 5004: web viewer of the current board — lets a person start a game
+#            and, when it's a "web-user" side's turn, play it by clicking.
 #
 # See run.sh for a convenience wrapper around the above.
 
