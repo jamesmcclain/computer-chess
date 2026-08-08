@@ -1,56 +1,56 @@
 ---
 name: computer-chess
-description: Play chess through the computer-chess REST service. This is a dockerized GNU Chess server with a JSON API on port 5003 and a board viewer on port 5004. Use this skill when the user asks to start, join, play, watch, or check the status of a game on this API. This includes a game against GNU Chess itself, or against another API user (a person, another agent, or a script), or against a person playing through the board viewer. It also covers a specific move, the side to move, and the result of a game. Read this skill before you call the API by hand. It gives the exact endpoints, request and response shapes, and the turn-taking and end-of-game rules for correct play.
+description: Play chess through the computer-chess REST service, a dockerized GNU Chess server with a JSON API on port 5003 and a board viewer on port 5004. Use this skill when the user wants to start, join, play, watch, or check a game — against GNU Chess, another API user, or a person on the board viewer. It also covers a specific move, the side to move, and the game result. Read this skill before you call the API by hand. It gives the exact endpoints, request and response shapes, and the turn-taking and end-of-game rules for correct play.
 ---
 
 # Playing chess through computer-chess
 
-This skill drives the computer-chess REST API. See that repository's
-`README.md` for the full endpoint reference. This skill assumes the
-container is already running and reachable. The default address is
-`http://10.0.2.2:5003` for the API and `http://10.0.2.2:5004` for the
-board viewer. If you received a different host or port, use it in
+This skill drives the computer-chess REST API. See the repository's
+`README.md` for the full endpoint reference.
+
+Assume the container is already running and reachable. Default
+addresses: `http://10.0.2.2:5003` for the API, `http://10.0.2.2:5004`
+for the board viewer. If you got a different host or port, use it in
 place of these defaults everywhere below.
 
 Core facts to remember:
 
 - **One game is active at a time.** A new game replaces any game in
   progress.
-- **A side is one of three types.** `"api-user"` (an outside caller
-  such as you, submitting moves through this API), `"web-user"` (a
-  person playing through the board viewer, by clicking the board), or
-  `"engine"` (GNU Chess). You always act as `"api-user"`, whichever
-  color you play. Your opponent can be any of the three types. Do not
-  assume it is the engine.
-- **The API uses no authentication and no seat reservation.** Anyone
-  who calls `POST /api/game/move` during a given color's turn moves for
-  that color. There is no login and no player ID. "Playing white" means
-  "you submit moves while `turn` is `white`".
-- **The board itself is the only state that matters.** Trust the
-  `state` object in each response, or a fresh `GET /api/game`, over
-  anything you remember from earlier in the conversation. You cannot
-  predict the engine's moves, or another person's moves, in advance.
+- **A side has one of three types.** `"api-user"` (an outside caller
+  like you, sending moves through this API), `"web-user"` (a person
+  who clicks the board in the viewer), or `"engine"` (GNU Chess). You
+  always act as `"api-user"`, whichever color you play. Your opponent
+  can be any of the three types — do not assume it is the engine.
+- **The API has no authentication and no seat reservation.** Whoever
+  calls `POST /api/game/move` during a color's turn moves for that
+  color. There is no login and no player ID. "Playing white" means
+  you submit moves while `turn` is `white`.
+- **The board state is the only state that matters.** Trust the
+  `state` object in each response, or a fresh `GET /api/game` call,
+  over anything you remember from earlier in the conversation. You
+  cannot predict the engine's moves, or another person's moves, in
+  advance.
 - **Do not check the turn in a tight loop.** `state.turn` (from
   `GET /api/game`) names the side to move. If it is not your turn,
-  prefer `GET /api/game/wait` over polling — it blocks until your turn
-  comes up. See section 4.3.
-- **Always narrate your thinking to the user.** After you see an
-  opponent move, and before you submit your own move, say something.
-  Section 4.1 gives the exact points to do this at. This is separate
-  from in-game chat (next bullet) — it is what you tell the person you
-  are talking to, in this conversation.
-- **You can set a display name, attach a short chat message to a
-  move, and record private reasoning.** All three are optional. The
-  name and chat are visible to your opponent and anyone watching the
-  board viewer. Reasoning is not shared with anyone while the game is
-  in progress (see the transcript exception in section 2). There is
-  no standalone chat channel — chat always rides along with a move.
-  See section 2.
+  use `GET /api/game/wait` instead of polling — it blocks until your
+  turn comes up. See section 4.3.
+- **Always narrate your thinking to the user.** Say something after
+  you see an opponent's move, and again before you submit your own
+  move. Section 4.1 gives the exact points to do this at. This is
+  separate from in-game chat (next bullet): narration is what you
+  tell the person in this conversation.
+- **You can set a display name, attach a short chat line to a move,
+  and record private reasoning.** All three are optional. Your
+  opponent and anyone at the board viewer see the name and chat.
+  Reasoning stays private while the game is in progress (section 2
+  covers the transcript exception). There is no standalone chat
+  channel — chat always goes out with a move. See section 2.
 - **You can "phone a friend" for a move recommendation, since you are
-  always `"api-user"`.** This asks GNU Chess what it would play in the
-  current position, without submitting that move or ending your turn.
-  Each game gives you a small, separate budget of level-10 and
-  level-5 queries — by default 1 and 2. See section 4.5.
+  always `"api-user"`.** This asks GNU Chess for its move choice in
+  the current position, without submitting that move or ending your
+  turn. Each game gives you a small budget of level-10 and level-5
+  queries — 1 and 2 by default. See section 4.5.
 - **Once the game ends, a PGN transcript is available.** It folds in
   every move's chat and reasoning. See section 5.1.
 
@@ -66,59 +66,56 @@ Content-Type: application/json
 - `white` and `black` are each `"api-user"`, `"web-user"`, or
   `"engine"` (see the core facts above for what each means). Every
   pairing is valid, including two engines — see the note below.
-- If you are the one playing, pick your color and set the other side
-  accordingly:
+- If you are playing, pick your color and set the other side:
   - You vs. the engine, you as White: `{"white": "api-user", "black": "engine"}`
   - You vs. the engine, you as Black: `{"white": "engine", "black": "api-user"}`
   - You vs. another API user: `{"white": "api-user", "black": "api-user"}`
   - You vs. a person on the board viewer: set the other side to
     `"web-user"`, for example `{"white": "api-user", "black": "web-user"}`.
 - `level` (optional, `1`-`10`, weakest to strongest, default `5`) sets
-  the difficulty for both sides at once. It only matters for a side
+  the difficulty for both sides at once. It matters only for a side
   that is `"engine"`. `white_level` and `black_level` (each optional,
-  `1`-`10`) set one side's difficulty on its own, and win over `level`
-  for that side. Use them for two engines at different strengths (see
+  `1`-`10`) set one side's difficulty alone, and win over `level` for
+  that side — use them for two engines at different strengths (see
   below). Omit a level to keep its last value. `GET /api/engine-levels`
   lists what each level means. If the user asks for an easier or
-  harder opponent, set the level accordingly. The same applies if they
-  name a rough difficulty, such as "beginner" or "hard". Do not guess
-  at move quality yourself. You can also change a level at any time,
-  without a new game: `POST /api/game/level {"level": N, "color": "white"}`
-  (omit `"color"` to set both sides).
+  harder opponent, or names a rough difficulty such as "beginner" or
+  "hard", set the level to match. Do not guess at move quality
+  yourself. You can also change a level at any time, without a new
+  game: `POST /api/game/level {"level": N, "color": "white"}` (omit
+  `"color"` to set both sides).
 - If `white` is `"engine"` and `black` is not, the engine plays its
-  first move immediately. The response holds this move in
-  `engine_move`. Read it before you do anything else. If you are
-  Black, this is the move you respond to.
+  first move at once. The response holds this move in `engine_move`.
+  Read it before you do anything else — if you are Black, this is the
+  move you respond to.
 - `white_name`/`black_name` (each optional) set that side's display
-  name for this game. Names never carry over from a previous game —
-  every new game starts with neither side named. See section 2 for
-  what a name does and how to set or change one later, including for
-  a game you did not start.
+  name for this game. Names never carry over from the last game —
+  every new game starts with no names set. See section 2 to learn
+  what a name does, and how to set or change one later, even for a
+  game you did not start.
 - `friend_level5_limit`/`friend_level10_limit` (each optional,
   integers, default `2` and `1`) set this game's "phone a friend"
   budget for whichever side ends up `"api-user"` — see section 4.5.
-  Like the name fields above, these are not sticky: every new game
-  gets the defaults unless you set them here, and usage always starts
-  at zero. Raise them if the user wants more hints available, or set
-  either to `0` to turn that tier off entirely.
-- **Two engines watching each other is supported, for a user who wants
-  to watch a game rather than play one.** Set both `white` and `black`
-  to `"engine"`, optionally with different `white_level` and
-  `black_level`. Neither side will ever call `POST /api/game/move`. Do
-  not start this setup if the user, or you, want to play instead.
-  Nothing in section 4 applies to a game like this. The game plays
-  itself out in the background at its own pace. Watch it with
+  Like the name fields, these do not carry over: every new game gets
+  the defaults unless you set them here, and usage always starts at
+  zero. Raise them if the user wants more hints, or set either to `0`
+  to turn that tier off.
+- **Two engines can play each other, for a user who wants to watch
+  instead of play.** Set both `white` and `black` to `"engine"`, with
+  different `white_level`/`black_level` if you want. Neither side
+  calls `POST /api/game/move`. Do not start this setup if the user, or
+  you, want to play. Section 4 does not apply to this kind of game. It
+  plays itself out in the background, at its own pace. Watch it with
   `GET /api/game` polling (section 4.3) or the board viewer's event
-  stream, the same as any other game.
+  stream, like any other game.
 
 The response is `201` with `{"state": {...}, "engine_move": {...} | null}`.
 Keep `state`: `state.turn` names the side to move next.
 
 ## 2. Setting your name, chatting, and recording your reasoning
 
-All three features below are optional and cosmetic, with no effect on
-move legality or turn order. Skip whichever ones the user has not
-asked for.
+All three features below are optional. They do not affect move
+legality or turn order. Skip any the user did not ask for.
 
 **Display name.** Set one with:
 
@@ -130,135 +127,129 @@ Content-Type: application/json
 ```
 
 - `color` is `"white"` or `"black"` — whichever side you are playing.
-- `name` is up to 40 characters. Longer text is cut short rather than
-  rejected. Send an empty string to clear a name back to showing just
-  your type (`"api-user"`).
-- This works whether or not a game is running, and takes effect right
-  away. Use it to set your name before your first move in a game you
-  are joining (section 3). `white_name`/`black_name` on
-  `POST /api/game` (section 1) only sets a name when that game is
-  created.
-- Once set, your name is shown in the board viewer and stamped on
-  each of your move-log entries (see `name` in section 4.2). It does
-  *not* carry over to the next game — every new game starts with
-  neither side named, so set it again (via `white_name`/`black_name`
-  at game start, or this endpoint afterward) each time you want one.
+- `name` can be up to 40 characters. Longer text is cut short, not
+  rejected. Send an empty string to clear the name — the viewer then
+  shows only your type (`"api-user"`).
+- This works whether or not a game is running, and takes effect at
+  once. Use it to set your name before your first move in a game you
+  join (section 3). `white_name`/`black_name` on `POST /api/game`
+  (section 1) sets a name only when you create that game.
+- Once set, your name shows in the board viewer and on each of your
+  move-log entries (see `name` in section 4.2). It does *not* carry
+  over to the next game. Set it again each time — with
+  `white_name`/`black_name` at game start, or with this endpoint
+  after.
 
 **Chat attached to a move.** Attach a short line to a move with the
 `chat` field on `POST /api/game/move` (section 4.2). There is no
-standalone chat channel — every chat line rides along with a move:
+standalone chat channel — every chat line goes out with a move:
 
 ```json
 {"move": "e2e4", "chat": "Good luck!"}
 ```
 
-- `chat` is up to 240 characters. Longer text is cut short. Leave it
-  out for a normal move with no chat attached.
+- `chat` can be up to 240 characters. Longer text is cut short. Leave
+  it out for a plain move with no chat.
 - There is no separate inbox. The API stamps your chat onto that
   move's entry in `move_log`. Your opponent sees it the next time
-  they read the game state — the response to their own next move, or
-  a plain `GET /api/game`. If your opponent is a person at the board
-  viewer, they see it there in a chat panel, next to the move.
-- To read a chat line from your opponent, check the latest `move_log`
-  entry that is theirs for a `chat` field. This is the same place you
-  already look to see what move they made (section 4.1, step 3).
-- If you want to say something not really about the move — a
-  greeting before the game starts, "gg" once it's decided — attach it
-  to whatever move you're submitting anyway (your first move, or your
-  last one before resigning). There's no way to send chat without
-  submitting a move alongside it.
+  they read the game state: in the response to their own next move,
+  or in a plain `GET /api/game` call. A person at the board viewer
+  sees it in a chat panel, next to the move.
+- To read a chat line from your opponent, check their latest
+  `move_log` entry for a `chat` field. This is the same place you
+  check to see what move they made (section 4.1, step 3).
+- To say something not tied to a move — a greeting, or "gg" at the
+  end — attach it to a move you submit anyway. Use your first move,
+  or your last move before you resign. You cannot send chat without a
+  move.
 
 **Private reasoning.** `reasoning` (optional, up to 1000 characters,
-also cut short rather than rejected) is a second field on
+also cut short, not rejected) is a second field on
 `POST /api/game/move`, alongside `chat`:
 
 ```json
 {"move": "e2e4", "reasoning": "e4 grabs the center and opens lines for the bishop and queen."}
 ```
 
-- Unlike `chat`, `reasoning` is never returned by any endpoint while
-  the game is in progress. It is kept only on the server. It is not
-  shown to your opponent, anyone at the board viewer, or even back to
-  you on a later read — with one exception: once the game ends, it is
-  folded into that game's PGN transcript (section 5.1), since there
-  is no longer any ongoing advantage to protect. Use it if the user
-  wants their move-by-move thinking recorded for later review. This
-  is separate from what you say to them directly (the "narrate your
-  thinking" core fact above), and separate from `chat`, which your
-  opponent does see immediately.
-- This is unrelated to the plain-language explanation you already
-  give the user before each move (section 4.1, step 4). Giving one
-  does not excuse skipping the other.
+- Unlike `chat`, no endpoint returns `reasoning` while the game is in
+  progress. The server keeps it alone — not shown to your opponent,
+  anyone at the board viewer, or even back to you on a later read.
+  One exception: once the game ends, it goes into that game's PGN
+  transcript (section 5.1), since no advantage is left to protect.
+  Use it when the user wants their move-by-move thinking recorded for
+  later review. This is separate from what you say to the user
+  directly (the "narrate your thinking" core fact), and separate from
+  `chat`, which your opponent sees at once.
+- This is not the plain-language explanation you give the user before
+  each move (section 4.1, step 4). Give both — one does not replace
+  the other.
 
 ## 3. Joining a game already in progress
 
-The API has no login or seat system, so "joining" means: check the
+The API has no login or seat system. "Joining" means: check the
 current state, find the open side, and start submitting moves for it.
-You can join as White or as Black. The steps are the same for both,
-only the color name changes.
+You can join as White or as Black — the steps are the same, only the
+color name changes.
 
 1. Check whether a game exists, and what it looks like:
    ```
    GET /api/game
    ```
-   A `404` means no game has started. Go to section 1 instead, and
-   set yourself, `"api-user"`, as whichever color the user wants.
+   A `404` means no game has started. Go to section 1, and set
+   yourself, `"api-user"`, as whichever color the user wants.
 
 2. Read `state.players`, for example
-   `{"white": "api-user", "black": "engine"}`. This names the type of
-   each side. Find the color the user wants you to play, then confirm
-   its type:
-   - If that color's type is already `"api-user"` and no one else is
-     acting for it, you can play it. Move on to step 3.
-   - If that color's type is `"engine"` or `"web-user"`, you cannot
-     take over that side. Tell the user, and offer to start a fresh
-     game instead (section 1) with them set to your intended color.
+   `{"white": "api-user", "black": "engine"}` — this names the type of
+   each side. Find the color the user wants, then check its type:
+   - If the type is already `"api-user"` and no one else acts for it,
+     you can play it. Go to step 3.
+   - If the type is `"engine"` or `"web-user"`, you cannot take over
+     that side. Tell the user, and offer to start a new game instead
+     (section 1) with your color set correctly.
    - If both colors show `"engine"`, this is a watch-only game between
-     two engines (see the note in section 1). Neither color is
-     joinable. Tell the user, and offer to start a fresh game instead.
+     two engines (see the note in section 1). No color is joinable.
+     Tell the user, and offer a new game instead.
 
 3. Read `state.status` and `state.game_over`. If the game already
-   ended, do not submit a move. Report the result instead (section 5)
+   ended, do not submit a move — report the result instead (section 5),
    and offer a new game.
 
-4. Read `state.turn`. This is the color to move now, not necessarily
-   your color. If `state.turn` equals your color, go to section 4 and
-   play your move. If not, wait for your turn (section 4.3).
+4. Read `state.turn` — the color to move now, not necessarily your
+   color. If it equals your color, go to section 4 and play your
+   move. If not, wait for your turn (section 4.3).
 
 A two-API-user game (`state.players` shows `"api-user"` for both
-colors) needs one extra check: the state alone does not say which
-outside caller owns which color, since there is no login. Ask the user
-which color they want you to play, then submit moves only when
-`state.turn` matches that color.
+colors) needs one more check: the state does not say which caller
+owns which color, since there is no login. Ask the user which color
+they want you to play, and submit moves only when `state.turn`
+matches that color.
 
 ## 4. Playing the game
 
 ### 4.1 The move loop
 
-For each of your turns, repeat this loop:
+Repeat this loop for each of your turns:
 
 1. Query legal moves with curl:
    ```bash
    curl http://10.0.2.2:5003/api/game/legal-moves
    ```
 2. Query the board state if you need a reminder. This step is
-   optional. Use it when some time has passed since you last checked,
-   or after an opponent's move you have not seen yet:
+   optional — use it when time has passed since your last check, or
+   after an opponent's move you have not seen:
    ```bash
    curl http://10.0.2.2:5003/api/game
    ```
 3. Check for an opponent move since your last turn: a new
    `engine_move`, or a new `move_log` entry from your opponent. If you
-   find one, tell the user what you think it aims to do, in plain
-   language. Do this every time, before you plan your own move. Also
-   check that entry for a `chat` field (section 2). If it has one,
-   treat it as a chat line from your opponent and react to it too.
-4. Choose a legal move. Before you submit it, tell the user the
-   theory behind it: explain what it does for your position, and why
-   you picked it over the alternatives. Give this explanation every
-   time, not only when the move looks unusual. Optionally, also give
-   the move a short `chat` (section 2): a greeting, a comment on the
-   position, anything brief.
+   find one, tell the user what you think it does, in plain language,
+   before you plan your own move. Also check that entry for a `chat`
+   field (section 2) and react to it if present.
+4. Choose a legal move. Before you submit it, tell the user the idea
+   behind it: what it does for your position, and why you picked it
+   over the alternatives. Give this explanation every time, not only
+   for unusual moves. You can also add a short `chat` (section 2): a
+   greeting, a comment on the position, anything brief.
 5. Submit the move with curl:
    ```bash
    curl -X POST http://10.0.2.2:5003/api/game/move \
@@ -267,12 +258,12 @@ For each of your turns, repeat this loop:
    ```
 6. Repeat from step 1 until the game ends (section 5).
 
-If the response to your move has a non-null `engine_move`, that is
-the engine's reply. Treat it the same as any opponent move: narrate
-it (step 3) at the start of your next loop, before you plan your
-reply. In a two-API-user or a `"web-user"`-opponent game, wait for the
-other side (section 4.3) instead, before your next loop. Narrate their
-move (step 3) as soon as you see it in `move_log`.
+A non-null `engine_move` in the response is the engine's reply. Treat
+it like any opponent move: narrate it (step 3) at the start of your
+next loop, before you plan your reply. In a two-API-user or
+`"web-user"`-opponent game, wait for the other side instead (section
+4.3), then narrate their move (step 3) as soon as you see it in
+`move_log`.
 
 ### 4.2 Move submission details
 
@@ -287,9 +278,9 @@ Each entry has `uci` (for example, `"e2e4"`, or `"e7e8q"` for
 promotion), `san` (for example, `"e4"`, `"Nf3"`, `"O-O"`), `from`,
 `to`, and `promotion`.
 
-Submit a move. UCI and SAN both work. Prefer UCI, because it has only
-one meaning. `chat` and `reasoning` (both optional, section 2)
-attach a chat line and a private note, respectively:
+Submit a move. UCI and SAN both work — use UCI, since it has only one
+meaning. `chat` and `reasoning` (both optional, section 2) attach a
+chat line and a private note:
 
 ```
 POST /api/game/move
@@ -308,26 +299,26 @@ Response:
 }
 ```
 
-- `move` echoes back what you submitted, with `name` (your current
-  display name, or `null` if you have not set one — section 2) and
-  `chat` (only present if you sent one) added.
+- `move` echoes back what you submitted, plus `name` (your display
+  name, or `null` if unset — section 2) and `chat` (only if you sent
+  one).
 - `engine_move` is set (non-null) only when it becomes an `"engine"`
-  side's turn immediately after your move. The API computes and
-  applies the engine's reply in this same call. Read it: this is the
-  opponent's reply you narrate and respond to next (section 4.1, step 3).
-- `state` is the full, current game state, after both moves above are
-  applied. Always read `turn` and `status` from this object. Do not
-  assume their values. It also carries `player_names`, the current
-  `{"white": name_or_null, "black": name_or_null}` (section 2).
-- `400` means the move was illegal, malformed, or it was not an
-  `"api-user"` or `"web-user"` side's turn. Read the `error` field and
-  correct your next call: for example, fetch legal moves again, or
-  check the turn again.
+  side's turn right after your move. The API computes and applies the
+  engine's reply in this same call. This is the opponent's reply —
+  narrate and respond to it next (section 4.1, step 3).
+- `state` is the full game state after both moves apply. Always read
+  `turn` and `status` from it. Do not assume their values. It also
+  carries `player_names`: `{"white": name_or_null, "black": name_or_null}`
+  (section 2).
+- `400` means the move was illegal or malformed, or it was not an
+  `"api-user"`/`"web-user"` turn. Read the `error` field, then correct
+  your next call — for example, fetch legal moves again, or check the
+  turn again.
 
 ### 4.3 Waiting for the other side
 
 If it is not your turn, wait for your opponent (an `"api-user"` or
-`"web-user"`, not the engine) with one blocking call instead of a
+`"web-user"`, not the engine) with one blocking call, instead of a
 poll loop:
 
 ```
@@ -338,52 +329,54 @@ GET /api/game/wait?color=white&timeout=25
   color's turn, the game ends, or `timeout` seconds pass (optional,
   default 25, capped at 55) — whichever comes first. It returns
   `{"state": {...}}`.
-- It returns immediately, with no wait at all, if it is already your
-  turn, the game has already ended, or no game has started.
+- It returns at once, with no wait, if it is already your turn, the
+  game already ended, or no game has started.
 - A timeout looks the same as any other return. Check `state.turn`
   and `state.game_over` yourself. If neither changed, call it again.
-- While this call is blocked, you cannot do anything else in this
-  conversation. Tell the user you are waiting for their opponent's
-  move before you make this call. Nothing else will happen until it
-  returns.
+- This call blocks your whole turn — you cannot do anything else in
+  the conversation until it returns. Tell the user you are waiting
+  for their move before you make this call.
 
-To keep the conversation moving while you wait, instead poll
-`GET /api/game`, with a real pause between calls:
+To keep the conversation moving while you wait, poll `GET /api/game`
+instead, with a real pause between calls:
 
 ```
 GET /api/game        # check, think for a few seconds, check again — not a rapid loop
 ```
 
 Each time you check and it is still not your turn, spend a few
-seconds on something useful. Think ahead about a reply to a likely
-opponent move. Note your plan, or tell the user you wait for their
-move. Then check once more.
+seconds on something useful. Think ahead about a likely opponent
+reply, note your plan, or tell the user you are waiting. Then check
+again.
 
 Either way, stop as soon as `state.turn` becomes your color, or
-`state.game_over` becomes `true`. A person watching the board viewer
-sees updates instantly, over Server-Sent Events at
-`GET http://10.0.2.2:5004/events`. That stream is meant for the
-viewer page, not listed as a control endpoint. You can read it too,
-if you prefer it to either option above.
+`state.game_over` becomes `true`. A person at the board viewer sees
+updates at once, over Server-Sent Events at
+`GET http://10.0.2.2:5004/events`. That stream serves the viewer page
+and is not a control endpoint, but you can read it too if you prefer
+it to the options above.
 
 ### 4.4 Watching without playing
 
-`GET http://10.0.2.2:5004/` is an HTML board. It updates live through
-Server-Sent Events, with no manual refresh, for a user who wants to
-watch. A person there can also start a game, play a `"web-user"` side
-by clicking the board, type a chat line to go out with their next
-move, or end the game early with a Resign or Restart button — but
-that is a person acting through the browser, not you. When you act on
-the game, always use the REST API (port 5003) as described in this
-skill.
+`GET http://10.0.2.2:5004/` is an HTML board for a user who wants to
+watch. It updates live over Server-Sent Events, with no manual
+refresh. A person there can also:
+
+- start a game
+- play a `"web-user"` side by clicking the board
+- type a chat line to go out with their next move
+- end the game with a Resign or Restart button
+
+That is a person acting through the browser, not you. Always use the
+REST API (port 5003) when you act on the game.
 
 ### 4.5 Phoning a friend
 
-You can ask GNU Chess what it would play in the current position,
-without submitting that move — a hint for a hard decision, not a
-substitute for choosing and submitting your own move (section 4.1,
-step 4-5). This is only available to you, the `"api-user"` side, and
-only on your own turn.
+You can ask GNU Chess for its move choice in the current position,
+without submitting that move. Use it as a hint for a hard decision,
+not as a substitute for choosing and submitting your own move
+(section 4.1, steps 4-5). It is available only to you, the
+`"api-user"` side, and only on your own turn.
 
 ```
 POST /api/game/phone-a-friend
@@ -392,19 +385,19 @@ Content-Type: application/json
 {"level": 10}
 ```
 
-- `level` is `5` or `10` — no other values. Level 10 searches deeper
-  and gives a stronger recommendation; level 5 is quicker and weaker.
-  Pick 10 for a critical, hard-to-read position; 5 is enough for a
-  routine check.
-- Each level has its own budget for the whole game, set when the game
-  was started (`friend_level5_limit`/`friend_level10_limit`, section
-  1; default `2` for level 5 and `1` for level 10). Budgets are
-  tracked separately per side, so in a two-`"api-user"` game your
-  budget is independent of your opponent's.
-- Calling this does **not** change the board, does **not** end your
-  turn, and does **not** count as your move. You must still submit a
-  move yourself via `POST /api/game/move` (section 4.2) afterward,
-  whether or not you take the suggestion.
+- `level` is `5` or `10` — no other value. Level 10 searches deeper
+  and gives a stronger recommendation. Level 5 is faster and weaker.
+  Pick level 10 for a critical, hard-to-read position. Level 5 is
+  enough for a routine check.
+- Each level has its own budget for the whole game, set at game start
+  (`friend_level5_limit`/`friend_level10_limit`, section 1 — default
+  `2` for level 5, `1` for level 10). Each side has its own budget,
+  so in a two-`"api-user"` game your budget does not depend on your
+  opponent's.
+- Calling this does **not** change the board, end your turn, or count
+  as your move. You must still submit your own move with
+  `POST /api/game/move` (section 4.2) after, whether or not you take
+  the suggestion.
 
 Response:
 
@@ -417,12 +410,12 @@ Response:
 
 - `advice.uci`/`advice.san` is the recommended move, in both
   notations (section 4.2 explains the difference). `advice.used`,
-  `advice.limit`, and `advice.remaining` tell you how much of that
-  level's budget you've now used, its total, and what's left.
-- `state` is the full, current game state — unchanged by this call
-  except for `state.phone_a_friend`, which always shows both sides'
-  budget and usage at both levels, whether or not you've called this
-  endpoint yet:
+  `advice.limit`, and `advice.remaining` give the budget used, the
+  total, and what remains.
+- `state` is the full, current game state — unchanged by this call,
+  except `state.phone_a_friend`. That field always shows both sides'
+  budget and usage at both levels, whether or not you have called
+  this endpoint yet:
   ```json
   "phone_a_friend": {
     "limits": {"level_5": 2, "level_10": 1},
@@ -430,21 +423,26 @@ Response:
     "black": {"used": {"level_5": 0, "level_10": 0}, "remaining": {"level_5": 2, "level_10": 1}}
   }
   ```
-- `400` means it was not your turn, your side is not `"api-user"`
-  (should not happen — you always are), `level` was not `5` or `10`,
-  or you have no queries left at that level. Read the `error` field.
-  If you are out of budget at one level, either try the other level
-  (if you still have queries there) or just decide on your own.
-- Using this is optional. Only call it when it would actually help —
-  a genuinely hard or unclear position — not on every move; your
-  budget is small by design. When you do use it and then move, feel
-  free to mention to the user that you asked for a hint, as part of
-  your normal narration (the "always narrate" core fact above).
+- `400` means one of these:
+  - it was not your turn
+  - your side was not `"api-user"` (this will not happen — you are
+    always `"api-user"`)
+  - `level` was not `5` or `10`
+  - you had no queries left at that level
+
+  Read the `error` field. If you are out of budget at one level, try
+  the other level, if you still have queries there, or decide on your
+  own.
+- Using this is optional. Call it only when it will truly help, in a
+  hard or unclear position — not on every move, since your budget is
+  small by design. When you use it, mention to the user that you
+  asked for a hint, as part of your normal narration (the "always
+  narrate" core fact).
 
 ## 5. Recognizing the end of a game
 
 After every move, or every poll, check the `state` object's
-`game_over` and `status` fields. Do not infer the end of the game from
+`game_over` and `status` fields. Do not guess the end of the game from
 the move history yourself.
 
 - `game_over: false` means the game continues. `status` is
@@ -464,42 +462,42 @@ the move history yourself.
 
   `state.winner` is `"white"`, `"black"`, or `null` (a draw, or no
   result yet). On checkmate or resignation, this field names the
-  winner directly. Do not compute it yourself.
+  winner directly — do not compute it yourself.
 
 - Once `game_over` is `true`, `POST /api/game/move` starts to return
-  `400` ("game is not in progress"). Treat this as confirmation only
-  if you somehow missed the state check. Check `state` directly
-  instead. Do not rely on the `400` as your main signal.
+  `400` ("game is not in progress"). Use this only as backup, if you
+  missed the state check. Check `state` directly — do not rely on the
+  `400` as your main signal.
 - To resign on behalf of a side, and end the game early:
   ```
   POST /api/game/resign
   {"player": "white"}
   ```
-- When a game ends, report the result to the user in plain language,
-  for example "Checkmate — black wins" or "Draw by stalemate", not the
-  raw status string. Offer to start a new game (section 1) if the user
-  wants to keep playing.
+- When a game ends, report the result to the user in plain language —
+  for example "Checkmate — black wins" or "Draw by stalemate" — not
+  the raw status string. Offer to start a new game (section 1) if the
+  user wants to keep playing.
 
 ### 5.1 Downloading a transcript
 
-Once the game has ended (and only then), a PGN (Portable Game
-Notation) transcript is available — the standard plain-text chess
-format read by lichess.org, chess.com, and most chess software:
+Once the game has ended, and only then, a PGN (Portable Game
+Notation) transcript is available. PGN is the standard plain-text
+chess format read by lichess.org, chess.com, and most chess software:
 
 ```
 GET /api/game/transcript
 ```
 
-- Returns the raw PGN text (not JSON) — metadata as tag pairs at the
-  top (players, result, engine levels where relevant, how the game
+- Returns raw PGN text, not JSON: metadata as tag pairs at the top
+  (players, result, engine levels where relevant, how the game
   ended), then the move list.
 - Every move's `chat` (section 2) and any private `reasoning` you
-  recorded for it (also section 2) are folded in as a comment on that
-  move. This is the one place `reasoning` is ever exposed — once the
-  game is over there's no ongoing advantage left to protect.
+  recorded for it (also section 2) appear as a comment on that move.
+  This is the only place `reasoning` is ever exposed — once the game
+  is over, no advantage is left to protect.
 - `400` means no game has started, or the current game is still in
-  progress — this only works after `state.game_over` is `true`.
-- If the user asks for a copy of the game, a way to review it later,
-  or to see their own private reasoning written out, this is the
-  endpoint. Fetch it and share the contents (or save it to a file
-  named something like `game.pgn`, if you have file access).
+  progress. This only works once `state.game_over` is `true`.
+- Use this endpoint when the user asks for a copy of the game, a way
+  to review it later, or their own private reasoning written out.
+  Fetch it and share the contents, or save it to a file such as
+  `game.pgn`, if you have file access.
