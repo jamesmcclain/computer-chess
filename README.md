@@ -138,7 +138,8 @@ move.
   "engine_levels": {"white": 5, "black": 5},
   "fullmove_number": 1,
   "halfmove_clock": 0,
-  "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "message": "Good luck!"}]
+  "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "message": "Good luck!"}],
+  "chat_log": [{"seq": 1, "color": "black", "name": null, "message": "gg, well played", "ts": 1717000005.1}]
 }
 ```
 
@@ -150,19 +151,53 @@ move.
 Each `move_log` entry's `name` is that side's display name at the time
 of the move, or `null` if none was set (see `POST /api/game/name`
 above). Its `message` is present only if that move carried a chat
-line (see `POST /api/game/move` below).
+line (see `POST /api/game/move` below). `chat_log` holds standalone
+chat not attached to any move (see `POST /api/game/chat` below),
+newest last.
 
 If no game has started, this endpoint returns `404`.
 
 CAUTION: Do not poll this endpoint in a tight loop to check the turn.
-If you wait for an opponent, space out requests by at least two
-seconds. For a faster update, use the SSE stream on port 5004 (below).
-The SSE stream pushes a new state the instant the game changes.
+`GET /api/game/wait` (below) blocks until it is your turn, which is
+simpler and faster than polling. If you do poll, space out requests
+by at least two seconds. A person at the board viewer gets updates
+over the SSE stream on port 5004 (below) instead, the instant the
+game changes.
+
+### `GET /api/game/wait` — block until it is your turn
+
+```
+GET /api/game/wait?color=white&timeout=25
+```
+
+`color` (required) is the side to wait for. `timeout` (optional
+seconds, default 25, capped at 55) bounds how long the request can
+block. This call returns `{"state": {...}}` as soon as one of three
+things happens: it becomes `color`'s turn, the game ends, or the
+timeout passes. It returns immediately, without blocking, if any of
+those is already true when it is called — including if no game has
+started. A timed-out response looks the same as any other: check
+`state.turn` and `state.game_over` in it to tell the difference.
+
+### `POST /api/game/chat` — send a standalone chat message
+
+```json
+{"color": "white", "message": "gg, well played"}
+```
+
+`color` is `"white"` or `"black"`. `message` (up to 240 characters,
+trimmed rather than rejected if longer) is added to `chat_log` (see
+`GET /api/game` above), stamped with that side's current display
+name. Unlike `POST /api/game/move`'s `message` field, this chat is
+not tied to any particular move. Use it for a greeting, a comment
+between moves, or anything not about the move you just made. Works
+any time a game exists, including after it has ended.
+Response: `{"chat": {...}, "state": {...}}`.
 
 ### `POST /api/game/move` — submit a move
 
 ```json
-{"move": "e2e4", "message": "Good luck!"}
+{"move": "e2e4", "message": "Good luck!", "reasoning": "e4 grabs the center"}
 ```
 
 This endpoint accepts UCI notation (`e2e4`, `e7e8q` for promotion) or
@@ -178,6 +213,12 @@ no separate delivery step. The message is stamped onto this move's
 opponent sees both the next time they read the game state — for
 example, the response to their own next move. A person watching the
 board viewer sees it there too, next to the move.
+
+`reasoning` (optional, up to 1000 characters, also trimmed rather
+than rejected if longer) is a private note on why this move was
+chosen. Unlike `message`, it is never returned by this or any other
+endpoint. It is kept server-side only, for example for later review
+by whoever is operating the server.
 
 ```json
 {"move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "message": "Good luck!"},
@@ -238,20 +279,37 @@ shows a small picker for the piece to promote to.
 display name, type, and — for an `"engine"` side — its difficulty
 level. Set a name with `POST /api/game/name`. The side to move is
 highlighted. Any move that carried a `message` (see
-`POST /api/game/move`) shows up in a chat panel below the board, next
-to that move. This page only displays chat — it has no way to send
-one, since only an API user can attach a message to a move.
+`POST /api/game/move`), and any standalone chat sent with
+`POST /api/game/chat`, shows up in a chat panel below the board.
+Move-attached chat appears next to that move. Banter stands on its
+own. A person at this page can send banter too, through an input box
+at the bottom of the panel. This box is shown whenever at least one
+side is `web-user`.
+
+**Resign or restart.** While a game is in progress, a button appears
+above the board. If a person is behind either side (at least one
+side is `web-user`), it reads "Resign" and ends the game as that
+side, the same as `POST /api/game/resign`. The start form then
+reappears automatically, same as after any other game-ending result.
+If no side is `web-user` (an api-user/engine or engine-vs-engine
+game, for example), it reads "Restart" instead. It simply opens the
+start form early, without ending the running game on its own. The
+running game only actually stops once a new one is started from that
+form.
 
 **Last-move arrow.** After a move, a semi-transparent arrow points
 from its start square to its end square, on top of the piece that
-moved. It updates on every new move, and clears when a new game
-starts.
+moved. This happens for a move by any side, whether that side is a
+web user, an API user, or the engine. It updates on every new move,
+fades on its own after 60 seconds of no further move, and clears
+when a new game starts.
 
-The page's own `/game/start`, `/game/move`, and `/game/legal-moves`
-routes back these two features. They call the same `ChessGame` object
-as the REST API (port 5003), so they enforce the same rules. They exist
-only so the page's own JS can act on the game from its own origin.
-`api.py` (port 5003) stays the reference for programmatic play.
+The page's own `/game/start`, `/game/move`, `/game/legal-moves`,
+`/game/resign`, and `/game/chat` routes back these features. They
+call the same `ChessGame` object as the REST API (port 5003), so they
+enforce the same rules. They exist only so the page's own JS can act
+on the game from its own origin. `api.py` (port 5003) stays the
+reference for programmatic play.
 
 **Appearance.** The page includes controls for the board style and the
 piece style.

@@ -273,24 +273,45 @@ PAGE = """<!doctype html>
   #players-bar .side.to-move { background: var(--accent); border-color: var(--accent); color: #1a1a1a; font-weight: 600; }
   #players-bar .vs { color: #666; font-size: 0.75rem; }
 
+  /* ---- resign / restart --------------------------------------------------
+     One button, shown only while a game is in progress. Its label and
+     effect depend on whether a person could be behind either side (see
+     updateGameControls()): "Resign" (a real move, ends the game — see
+     POST /game/resign) if at least one side is 'web-user', else
+     "Restart" (just reveals the start form below early, so a spectator
+     of an api-user/engine game — including an engine-vs-engine one —
+     isn't stuck waiting for it to finish on its own). */
+  #game-control-btn {
+    display: none; all: unset; cursor: pointer; margin-bottom: 0.75rem;
+    font-size: 0.75rem; padding: 0.3rem 0.8rem; border-radius: 999px;
+    background: #1a1a1a; border: 1px solid #5a3a3a; color: #d99;
+  }
+  #game-control-btn:hover { background: #2a1a1a; }
+
   /* ---- last-move arrow ----------------------------------------------------
      A semi-transparent arrow drawn from a moved piece's old square to its
-     new one, so the move that just happened is obvious even to someone
+     new one — for a move by any side (web user, API user, or engine
+     alike) — so the move that just happened is obvious even to someone
      glancing at the board mid-game rather than watching it live. Uses an
      SVG with viewBox="0 0 8 8" (one unit per square) laid over the board,
      so it scales with the board automatically — no JS resize math needed,
-     unlike the pixel-based board sizing above. */
+     unlike the pixel-based board sizing above. Fades out on its own after
+     ARROW_FADE_MS if no further move arrives — see updateMoveArrow(). */
   #move-arrow { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-  #move-arrow-line { fill: none; stroke: var(--accent); stroke-width: 0.14; stroke-linecap: round; opacity: 0; transition: opacity 0.15s ease; }
+  #move-arrow-line { fill: none; stroke: var(--accent); stroke-width: 0.14; stroke-linecap: round; opacity: 0; transition: opacity 0.5s ease; }
   #move-arrow-line.shown { opacity: 0.85; }
-  #move-arrow-head { fill: var(--accent); opacity: 0; transition: opacity 0.15s ease; }
+  #move-arrow-head { fill: var(--accent); opacity: 0; transition: opacity 0.5s ease; }
   #move-arrow-head.shown { opacity: 0.85; }
 
   /* ---- chat -------------------------------------------------------------
-     Short messages an API user can attach to their moves (see
-     POST /api/game/move's 'message' field) show up here, newest at the
-     bottom. Purely a read-only log — this page has no way to send one,
-     since only API users can attach chat to a move. */
+     Two kinds of message show up here, newest at the bottom: a short
+     line an API user attached to one of their moves (POST /api/game/move's
+     'message' field, shown next to that move's SAN), and standalone
+     banter from either side (POST /api/game/chat), not tied to a move.
+     A person at this page can also send banter of their own, through the
+     input row at the bottom — shown only when at least one side is
+     'web-user' (see updateChatInput()), attributed to whichever web-user
+     color makes sense (see webUserChatColor()). */
   #chat-panel {
     display: none; flex-direction: column; width: 100%; max-width: 420px;
     margin-top: 1rem; background: var(--panel-bg); border: 1px solid var(--panel-border);
@@ -304,6 +325,18 @@ PAGE = """<!doctype html>
   #chat-log .chat-line { font-size: 0.8rem; line-height: 1.4; color: #ddd; }
   #chat-log .chat-line .chat-name { color: var(--accent); font-weight: 600; }
   #chat-log .chat-line .chat-move { color: #777; font-size: 0.72rem; }
+  #chat-input-row {
+    display: none; gap: 0.4rem; padding: 0.5rem 0.6rem; border-top: 1px solid var(--panel-border);
+  }
+  #chat-input-row input {
+    flex: 1 1 auto; min-width: 0; background: #1a1a1a; color: #eee; border: 1px solid #444;
+    border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.8rem;
+  }
+  #chat-input-row input:focus { outline: 1px solid var(--accent); }
+  #chat-input-row button {
+    all: unset; cursor: pointer; padding: 0.35rem 0.7rem; border-radius: 6px;
+    background: var(--accent); color: #1a1a1a; font-weight: 600; font-size: 0.78rem;
+  }
 </style>
 </head>
 <body>
@@ -367,11 +400,17 @@ PAGE = """<!doctype html>
     <div class="side black" id="side-black"><span class="dot"></span><span class="side-label"></span></div>
   </div>
 
+  <button id="game-control-btn"></button>
+
   <div id="board-wrap"><div id="board"></div><div id="promo-picker"></div></div>
   <div id="meta"></div>
   <div id="chat-panel">
     <div class="chat-title">Chat</div>
     <div id="chat-log"></div>
+    <div id="chat-input-row">
+      <input id="chat-input" type="text" maxlength="240" placeholder="Send a message&hellip;">
+      <button id="chat-send-btn">Send</button>
+    </div>
   </div>
 <script>
 const UNICODE = {
@@ -399,6 +438,10 @@ const sideWhiteEl = document.getElementById("side-white");
 const sideBlackEl = document.getElementById("side-black");
 const chatPanelEl = document.getElementById("chat-panel");
 const chatLogEl = document.getElementById("chat-log");
+const chatInputRowEl = document.getElementById("chat-input-row");
+const chatInputEl = document.getElementById("chat-input");
+const chatSendBtnEl = document.getElementById("chat-send-btn");
+const gameControlBtnEl = document.getElementById("game-control-btn");
 
 // cellEls[r][c] = the .sq div. lastCodes[r][c] = piece code last painted
 // there ("wN", etc.) or null. Built once; reused across every update so
@@ -415,17 +458,28 @@ let selectedSquare = null;
 let legalTargets = {};
 
 // Last-move arrow: line + arrowhead elements (built once in buildBoard(),
-// since it clears #board's contents), and how many move_log entries were
-// on the board the last time the arrow was drawn — a length change means
-// there's a new last move to point at (see updateMoveArrow()).
+// since it clears #board's contents), how many move_log entries were on
+// the board the last time the arrow was drawn — a length change means
+// there's a new last move to point at (see updateMoveArrow()) — and the
+// pending fade-out timer, restarted on every new move so the arrow always
+// shows for a full ARROW_FADE_MS after the *latest* move, not the first.
 let moveArrowLineEl = null;
 let moveArrowHeadEl = null;
 let lastArrowLogLength = 0;
+let arrowFadeTimer = null;
+const ARROW_FADE_MS = 60000;
 
-// Chat: how many move_log entries have already been rendered into the
-// chat panel, so re-renders only append new messages instead of rebuilding
-// the whole log (and losing scroll position) every time.
-let lastChatLogLength = 0;
+// Chat: how many move_log entries and chat_log (banter) entries have
+// already been rendered into the chat panel, so re-renders only add the
+// entries not yet shown — see updateChatPanel().
+let lastChatMoveLogLength = 0;
+let lastChatBanterLogLength = 0;
+
+// Set by the "Restart" button (see updateGameControls()) to force the
+// start-game form open even though a game is still in progress — plain
+// `!state.started || state.game_over` isn't enough for that case. Cleared
+// once a new game actually starts (see initStartPanel()'s start handler).
+let forceStartPanel = false;
 
 // ---------------------------------------------------------------------
 // Style state: persisted in localStorage so it's remembered per-browser
@@ -607,6 +661,7 @@ function buildBoard() {
   svg.appendChild(moveArrowHeadEl);
   boardEl.appendChild(svg);
   lastArrowLogLength = 0;
+  if (arrowFadeTimer) { clearTimeout(arrowFadeTimer); arrowFadeTimer = null; }
 }
 
 // ---------------------------------------------------------------------
@@ -620,8 +675,7 @@ function updateMoveArrow(state) {
   const log = (state && state.move_log) || [];
   if (!moveArrowLineEl) return;
   if (!state || !state.started || log.length === 0) {
-    moveArrowLineEl.classList.remove("shown");
-    moveArrowHeadEl.classList.remove("shown");
+    hideMoveArrow();
     lastArrowLogLength = 0;
     return;
   }
@@ -630,13 +684,21 @@ function updateMoveArrow(state) {
 
   const last = log[log.length - 1];
   if (!last.uci || last.uci.length < 4) {
-    moveArrowLineEl.classList.remove("shown");
-    moveArrowHeadEl.classList.remove("shown");
+    hideMoveArrow();
     return;
   }
   const [fr, fc] = squareToRC(last.uci.slice(0, 2));
   const [tr, tc] = squareToRC(last.uci.slice(2, 4));
+  // Drawn the same way regardless of who made the move — 'by' is not
+  // checked here — so an engine's move or another API user's move gets
+  // the same clear arrow as one made by a person clicking the board.
   drawMoveArrow(fc + 0.5, fr + 0.5, tc + 0.5, tr + 0.5);
+}
+
+function hideMoveArrow() {
+  moveArrowLineEl.classList.remove("shown");
+  moveArrowHeadEl.classList.remove("shown");
+  if (arrowFadeTimer) { clearTimeout(arrowFadeTimer); arrowFadeTimer = null; }
 }
 
 function drawMoveArrow(x1, y1, x2, y2) {
@@ -662,6 +724,16 @@ function drawMoveArrow(x1, y1, x2, y2) {
 
   moveArrowLineEl.classList.add("shown");
   moveArrowHeadEl.classList.add("shown");
+
+  // Fade the arrow out if this stays the latest move for a full minute —
+  // restarted on every call, so a flurry of moves keeps it visible for
+  // ARROW_FADE_MS after the *last* one, not the first.
+  if (arrowFadeTimer) clearTimeout(arrowFadeTimer);
+  arrowFadeTimer = setTimeout(() => {
+    moveArrowLineEl.classList.remove("shown");
+    moveArrowHeadEl.classList.remove("shown");
+    arrowFadeTimer = null;
+  }, ARROW_FADE_MS);
 }
 
 // ---------------------------------------------------------------------
@@ -826,8 +898,9 @@ function render(state) {
   clearSelection(); // any server-pushed state invalidates a local selection
 
   // Offer the start-game form whenever there's no game to watch — never
-  // started, or the last one already finished.
-  const needsStart = !state.started || state.game_over;
+  // started, or the last one already finished — or when the Restart
+  // button forced it open early (see doRestart()).
+  const needsStart = !state.started || state.game_over || forceStartPanel;
   startPanelEl.style.display = needsStart ? "flex" : "none";
 
   if (!state.started) {
@@ -838,9 +911,12 @@ function render(state) {
     moveArrowHeadEl = null;
     boardWrapEl.style.display = "none";
     playersBarEl.style.display = "none";
+    gameControlBtnEl.style.display = "none";
     chatPanelEl.style.display = "none";
+    chatInputRowEl.style.display = "none";
     chatLogEl.innerHTML = "";
-    lastChatLogLength = 0;
+    lastChatMoveLogLength = 0;
+    lastChatBanterLogLength = 0;
     statusEl.className = "";
     statusEl.textContent = "No game in progress. Start one below.";
     metaEl.textContent = "";
@@ -863,7 +939,9 @@ function render(state) {
   updateInteractivity(state);
   updateMoveArrow(state);
   updatePlayersBar(state);
+  updateGameControls(state);
   updateChatPanel(state);
+  updateChatInput(state);
 
   let text = (state.turn === "white" ? "White" : "Black") + " to move";
   statusEl.className = "";
@@ -907,44 +985,150 @@ function updatePlayersBar(state) {
 }
 
 // ---------------------------------------------------------------------
-// Chat: short messages an API user attached to their moves (the
-// 'message' field on POST /api/game/move) are stamped onto that move's
-// move_log entry server-side — there's no separate chat feed to poll,
-// this just renders whichever entries carry one. Appends only the
-// entries not yet shown, so it doesn't fight the person's scroll
-// position on every SSE push.
+// Chat: two sources, merged into one panel. A short line an API user (or
+// a web user — see below) attached to a move (the 'message' field on
+// POST /api/game/move, stamped onto that move's move_log entry), and
+// standalone banter (POST /api/game/chat's chat_log) not tied to any
+// move. Neither is polled for — both arrive as part of the normal state
+// push (SSE or otherwise); this just renders whichever entries carry a
+// message. Only the entries not yet shown are appended (merged by
+// timestamp, in case both grew in the same update), and the panel only
+// auto-scrolls if it was already scrolled to the bottom, so it doesn't
+// fight a person who scrolled up to read earlier history.
 // ---------------------------------------------------------------------
 function updateChatPanel(state) {
-  const log = state.move_log || [];
-  if (log.length < lastChatLogLength) {
-    // A new game started with a shorter log than we last saw — start over.
-    chatLogEl.innerHTML = "";
-    lastChatLogLength = 0;
-  }
-  const newEntries = log.slice(lastChatLogLength);
-  lastChatLogLength = log.length;
+  const moveLog = state.move_log || [];
+  const banterLog = state.chat_log || [];
 
-  let added = false;
-  for (const entry of newEntries) {
-    if (!entry.message) continue;
-    added = true;
+  if (moveLog.length < lastChatMoveLogLength || banterLog.length < lastChatBanterLogLength) {
+    // A new game started with shorter logs than we last saw — start over.
+    chatLogEl.innerHTML = "";
+    lastChatMoveLogLength = 0;
+    lastChatBanterLogLength = 0;
+  }
+
+  const newMoveEntries = moveLog.slice(lastChatMoveLogLength).filter(e => e.message);
+  const newBanterEntries = banterLog.slice(lastChatBanterLogLength);
+  lastChatMoveLogLength = moveLog.length;
+  lastChatBanterLogLength = banterLog.length;
+
+  const combined = newMoveEntries.concat(newBanterEntries).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  if (combined.length === 0) return;
+
+  const stuckToBottom = chatLogEl.scrollTop + chatLogEl.clientHeight >= chatLogEl.scrollHeight - 20;
+
+  for (const entry of combined) {
     const line = document.createElement("div");
     line.className = "chat-line";
     const nameSpan = document.createElement("span");
     nameSpan.className = "chat-name";
-    nameSpan.textContent = (entry.name || entry.by) + ": ";
-    const moveSpan = document.createElement("span");
-    moveSpan.className = "chat-move";
-    moveSpan.textContent = " (" + entry.san + ")";
+    nameSpan.textContent = (entry.name || entry.by || "anonymous") + ": ";
     line.appendChild(nameSpan);
     line.appendChild(document.createTextNode(entry.message));
-    line.appendChild(moveSpan);
+    if (entry.san) {
+      // This one came from move_log — it's chat attached to a move, so
+      // show which move, the same way section 2 of SKILL.md describes it.
+      const moveSpan = document.createElement("span");
+      moveSpan.className = "chat-move";
+      moveSpan.textContent = " (" + entry.san + ")";
+      line.appendChild(moveSpan);
+    }
     chatLogEl.appendChild(line);
   }
-  if (added) {
-    chatPanelEl.style.display = "flex";
-    chatLogEl.scrollTop = chatLogEl.scrollHeight;
+
+  chatPanelEl.style.display = "flex";
+  if (stuckToBottom) chatLogEl.scrollTop = chatLogEl.scrollHeight;
+}
+
+// ---------------------------------------------------------------------
+// Chat input: lets a person at this page send banter (POST /game/chat)
+// when at least one side is 'web-user'. Attributed to that side; if both
+// sides are 'web-user' (a hotseat game), attributed to whichever color
+// is currently on move, the same tie-break used for the resign button
+// (see resignColorFor()) — there's no login to tell two people apart
+// any more precisely than that.
+// ---------------------------------------------------------------------
+function webUserChatColor(state) {
+  return resignColorFor(state);
+}
+
+function updateChatInput(state) {
+  const color = state.started && !state.game_over ? webUserChatColor(state) : null;
+  chatInputRowEl.style.display = color ? "flex" : "none";
+}
+
+async function sendChat() {
+  const color = webUserChatColor(latestState);
+  const text = chatInputEl.value;
+  if (!color || !text.trim()) return;
+  chatSendBtnEl.disabled = true;
+  try {
+    await fetch("/game/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ color, message: text }),
+    });
+    chatInputEl.value = "";
+    // The new banter arrives through the SSE stream like everything else;
+    // no need to render it here too.
+  } catch (e) {
+    // Leave the typed text in place so nothing is lost; the person can retry.
+  } finally {
+    chatSendBtnEl.disabled = false;
+    chatInputEl.focus();
   }
+}
+
+chatSendBtnEl.addEventListener("click", sendChat);
+chatInputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendChat();
+});
+
+// ---------------------------------------------------------------------
+// Resign / restart button: one button, whose label and effect depend on
+// whether a person could be behind either side of the current game.
+// ---------------------------------------------------------------------
+function resignColorFor(state) {
+  if (!state || !state.started) return null;
+  const whiteIsWeb = state.players.white === "web-user";
+  const blackIsWeb = state.players.black === "web-user";
+  if (whiteIsWeb && !blackIsWeb) return "white";
+  if (blackIsWeb && !whiteIsWeb) return "black";
+  if (whiteIsWeb && blackIsWeb) return state.turn; // both web: whoever's turn it is
+  return null;
+}
+
+function updateGameControls(state) {
+  if (!state.started || state.game_over) {
+    gameControlBtnEl.style.display = "none";
+    return;
+  }
+  const resignColor = resignColorFor(state);
+  gameControlBtnEl.style.display = "";
+  gameControlBtnEl.textContent = resignColor ? "Resign" : "Restart";
+  gameControlBtnEl.onclick = () => (resignColor ? doResign(resignColor) : doRestart());
+}
+
+async function doResign(color) {
+  if (!confirm("Resign as " + color + "? This ends the game for everyone watching.")) return;
+  try {
+    await fetch("/game/resign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ player: color }),
+    });
+    // The game-over state (and the start panel it brings back — see
+    // render()) arrives through the SSE stream like any other change.
+  } catch (e) {
+    statusEl.textContent = "Could not reach the server to resign.";
+  }
+}
+
+function doRestart() {
+  if (!confirm("Start a new game now? This ends the current one for everyone watching.")) return;
+  forceStartPanel = true;
+  startPanelEl.style.display = "flex";
+  startPanelEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function setConn(live) {
@@ -1019,7 +1203,11 @@ async function initStartPanel() {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) errEl.textContent = data.error || "Could not start the game.";
+      if (!res.ok) {
+        errEl.textContent = data.error || "Could not start the game.";
+      } else {
+        forceStartPanel = false; // a real new game now exists; stop forcing the panel open
+      }
       // On success, the new state arrives through the SSE stream.
     } catch (e) {
       errEl.textContent = "Could not reach the server.";
@@ -1184,5 +1372,35 @@ def create_viewer_app(game):
         except GameError as e:
             return _error(str(e), 404 if "no game" in str(e) else 400)
         return jsonify(moves=moves, count=len(moves))
+
+    @app.post("/game/resign")
+    def game_resign():
+        """Backs the page's Resign button (shown when at least one side
+        is 'web-user' — see the JS). A person acting through the browser
+        has no color of their own to authenticate as, any more than an
+        API user does (see the module docstring), so this accepts
+        whichever color the button sent, same as the REST API's
+        POST /api/game/resign."""
+        body = request.get_json(silent=True) or {}
+        player = body.get("player")
+        try:
+            state = game.resign(player)
+        except GameError as e:
+            return _error(str(e))
+        return jsonify(state=state)
+
+    @app.post("/game/chat")
+    def game_chat():
+        """Backs the page's chat input (shown when at least one side is
+        'web-user'). Same underlying call as the REST API's
+        POST /api/game/chat."""
+        body = request.get_json(silent=True) or {}
+        color = body.get("color")
+        message = body.get("message")
+        try:
+            entry = game.send_chat(color, message)
+        except GameError as e:
+            return _error(str(e))
+        return jsonify(chat=entry, state=game.state())
 
     return app

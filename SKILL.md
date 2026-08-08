@@ -31,19 +31,19 @@ Core facts to remember:
   anything you remember from earlier in the conversation. You cannot
   predict the engine's moves, or another person's moves, in advance.
 - **Do not check the turn in a tight loop.** `state.turn` (from
-  `GET /api/game`) names the side to move. If it is not your turn, do
-  not call this endpoint back-to-back. Between checks, spend a few
-  seconds on something useful: think ahead about your reply to likely
-  opponent moves, or tell the user the current position. Then check
-  again. See section 4.3.
+  `GET /api/game`) names the side to move. If it is not your turn,
+  prefer `GET /api/game/wait` over polling — it blocks until your turn
+  comes up. See section 4.3.
 - **Always narrate your thinking to the user.** After you see an
   opponent move, and before you submit your own move, say something.
   Section 4.1 gives the exact points to do this at. This is separate
   from in-game chat (next bullet) — it is what you tell the person you
   are talking to, in this conversation.
-- **You can set a display name, and attach a short chat message to a
-  move.** Both are optional, and both are visible to your opponent and
-  anyone watching the board viewer. See section 2.
+- **You can set a display name, attach a short chat message to a
+  move, send standalone banter, and record private reasoning.** All
+  four are optional. The first three are visible to your opponent and
+  anyone watching the board viewer. The last is not shared with
+  anyone. See section 2.
 
 ## 1. Starting a new game
 
@@ -96,10 +96,11 @@ Content-Type: application/json
 The response is `201` with `{"state": {...}, "engine_move": {...} | null}`.
 Keep `state`: `state.turn` names the side to move next.
 
-## 2. Setting your name and sending chat messages
+## 2. Setting your name, chatting, and recording your reasoning
 
-Both are optional and cosmetic, with no effect on move legality or
-turn order. Skip this section if the user has not asked for either.
+All four features below are optional and cosmetic, with no effect on
+move legality or turn order. Skip whichever ones the user has not
+asked for.
 
 **Display name.** Set one with:
 
@@ -123,8 +124,8 @@ Content-Type: application/json
   each of your move-log entries (see `name` in section 4.2). It stays
   set for later games too, until changed again.
 
-**Chat messages.** Attach a short line to a move with the `message`
-field on `POST /api/game/move` (section 4.2):
+**Chat attached to a move.** Attach a short line to a move with the
+`message` field on `POST /api/game/move` (section 4.2):
 
 ```json
 {"move": "e2e4", "message": "Good luck!"}
@@ -140,6 +141,47 @@ field on `POST /api/game/move` (section 4.2):
 - To read a message from your opponent, check the latest `move_log`
   entry that is theirs for a `message` field. This is the same place
   you already look to see what move they made (section 4.1, step 3).
+
+**Banter (chat not attached to a move).** For a message that is not
+about any specific move — a greeting before the game starts, "gg"
+after it ends, anything in between — use:
+
+```
+POST /api/game/chat
+Content-Type: application/json
+
+{"color": "white", "message": "gg, well played"}
+```
+
+- `color` and `message` follow the same rules as above. `message` is
+  still capped at 240 characters, cut short rather than rejected.
+- This also has no separate inbox. Each call adds one entry to
+  `chat_log` in the game state, alongside `move_log`. Read both to
+  see everything said so far — `chat_log` for banter, `move_log`'s
+  `message` fields for chat tied to a move. A person at the board
+  viewer sees your banter in the same chat panel as move-attached
+  chat.
+- Works any time a game exists, even after it has ended — a `"gg"`
+  once the result is in is fine.
+
+**Private reasoning.** `reasoning` (optional, up to 1000 characters,
+also cut short rather than rejected) is a second field on
+`POST /api/game/move`, alongside `message`:
+
+```json
+{"move": "e2e4", "reasoning": "e4 grabs the center and opens lines for the bishop and queen."}
+```
+
+- Unlike `message`, `reasoning` is never returned by any endpoint. It
+  is kept only on the server. It is not shown to your opponent,
+  anyone at the board viewer, or even back to you on a later read.
+  Use it if the user wants their move-by-move thinking recorded for
+  later review. This is separate from what you say to them directly
+  (the "narrate your thinking" core fact above), and separate from
+  `message`, which your opponent does see.
+- This is unrelated to the plain-language explanation you already
+  give the user before each move (section 4.1, step 4). Giving one
+  does not excuse skipping the other.
 
 ## 3. Joining a game already in progress
 
@@ -204,6 +246,8 @@ For each of your turns, repeat this loop:
    language. Do this every time, before you plan your own move. Also
    check that entry for a `message` field (section 2). If it has one,
    treat it as a chat line from your opponent and react to it too.
+   Separately, check `chat_log` for any new banter (section 2) —
+   banter can arrive between your turns, not only alongside a move.
 4. Choose a legal move. Before you submit it, tell the user the
    theory behind it: explain what it does for your position, and why
    you picked it over the alternatives. Give this explanation every
@@ -239,14 +283,14 @@ promotion), `san` (for example, `"e4"`, `"Nf3"`, `"O-O"`), `from`,
 `to`, and `promotion`.
 
 Submit a move. UCI and SAN both work. Prefer UCI, because it has only
-one meaning. `message` (optional, section 2) attaches a chat line to
-the move:
+one meaning. `message` and `reasoning` (both optional, section 2)
+attach a chat line and a private note, respectively:
 
 ```
 POST /api/game/move
 Content-Type: application/json
 
-{"move": "e2e4", "message": "Good luck!"}
+{"move": "e2e4", "message": "Good luck!", "reasoning": "e4 grabs the center"}
 ```
 
 Response:
@@ -277,34 +321,55 @@ Response:
 
 ### 4.3 Waiting for the other side
 
-If it is not your turn and the other side is not `"engine"` (an
-`"api-user"` or a `"web-user"` opponent), do not spin in a tight
-`GET /api/game` loop. A tight loop wastes calls and gives no benefit.
-Instead, each time you check and it is still not your turn, spend a
-few seconds on something useful. Think ahead about a reply to a
-likely opponent move. Note your plan, or tell the user you wait for
-their move. Then check once more.
+If it is not your turn, wait for your opponent (an `"api-user"` or
+`"web-user"`, not the engine) with one blocking call instead of a
+poll loop:
+
+```
+GET /api/game/wait?color=white&timeout=25
+```
+
+- `color` is your color. This call blocks until it becomes that
+  color's turn, the game ends, or `timeout` seconds pass (optional,
+  default 25, capped at 55) — whichever comes first. It returns
+  `{"state": {...}}`.
+- It returns immediately, with no wait at all, if it is already your
+  turn, the game has already ended, or no game has started.
+- A timeout looks the same as any other return. Check `state.turn`
+  and `state.game_over` yourself. If neither changed, call it again.
+- While this call is blocked, you cannot do anything else in this
+  conversation. Tell the user you are waiting for their opponent's
+  move before you make this call. Nothing else will happen until it
+  returns.
+
+To keep the conversation moving while you wait, instead poll
+`GET /api/game`, with a real pause between calls:
 
 ```
 GET /api/game        # check, think for a few seconds, check again — not a rapid loop
 ```
 
-Stop checking and react as soon as `state.turn` becomes your color, or
-`state.game_over` becomes `true`. If you prefer not to poll at all,
-use the board viewer's event stream at `GET http://10.0.2.2:5004/events`
-(Server-Sent Events). This stream pushes a fresh state the instant the
-game changes. It is JSON meant for the viewer page, and the API docs
-do not list it as a control endpoint, but you can read it while you
-wait.
+Each time you check and it is still not your turn, spend a few
+seconds on something useful. Think ahead about a reply to a likely
+opponent move. Note your plan, or tell the user you wait for their
+move. Then check once more.
+
+Either way, stop as soon as `state.turn` becomes your color, or
+`state.game_over` becomes `true`. A person watching the board viewer
+sees updates instantly, over Server-Sent Events at
+`GET http://10.0.2.2:5004/events`. That stream is meant for the
+viewer page, not listed as a control endpoint. You can read it too,
+if you prefer it to either option above.
 
 ### 4.4 Watching without playing
 
 `GET http://10.0.2.2:5004/` is an HTML board. It updates live through
 Server-Sent Events, with no manual refresh, for a user who wants to
-watch. A person can also use this page to start a game, or to play a
-`"web-user"` side by clicking the board, but that is a person acting
-through the browser, not you. When you act on the game, always use the
-REST API (port 5003) as described in this skill.
+watch. A person there can also start a game, play a `"web-user"` side
+by clicking the board, send banter of their own, or end the game
+early with a Resign or Restart button — but that is a person acting
+through the browser, not you. When you act on the game, always use
+the REST API (port 5003) as described in this skill.
 
 ## 5. Recognizing the end of a game
 

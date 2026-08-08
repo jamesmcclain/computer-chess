@@ -6,7 +6,14 @@ submit moves for either side. All requests/responses are JSON.
 
 from flask import Flask, jsonify, request
 
-from game import GameError, LEVEL_MAX, LEVEL_MIN, describe_levels
+from game import (
+    GameError,
+    LEVEL_MAX,
+    LEVEL_MIN,
+    WAIT_DEFAULT_TIMEOUT_SECONDS,
+    WAIT_MAX_TIMEOUT_SECONDS,
+    describe_levels,
+)
 
 API_DOC = {
     "description": "GNU Chess REST API. One game at a time; starting a new "
@@ -40,14 +47,15 @@ API_DOC = {
                             "'engine_move'.",
         },
         "GET /api/game": "Current game state (board, whose turn it is, "
-                          "status, move log, engine levels, player names, "
-                          "...). This is also how to check whose turn it "
-                          "is — see the 'turn' field.",
+                          "status, move log, chat log, engine levels, "
+                          "player names, ...). This is also how to check "
+                          "whose turn it is — see the 'turn' field.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
                                       "Optional query param: from=e2",
         "POST /api/game/move": {
             "body": {"move": "e2e4 (UCI) or e4 (SAN)",
-                     "message": "optional, up to 240 chars"},
+                     "message": "optional, up to 240 chars",
+                     "reasoning": "optional, up to 1000 chars"},
             "description": "Submit a move for whichever side is currently "
                             "to move. 'message' (optional) is a short chat "
                             "line attached to this move — it is stamped, "
@@ -56,10 +64,41 @@ API_DOC = {
                             "in 'move_log'. There is no separate inbox: "
                             "your opponent sees it the next time they read "
                             "the game state, e.g. in the response to their "
-                            "own next move, or a plain GET /api/game. If "
-                            "it becomes the engine's turn afterward, "
-                            "gnuchess replies immediately and its move is "
-                            "returned as 'engine_move'.",
+                            "own next move, or a plain GET /api/game. "
+                            "'reasoning' (optional) is a private note on "
+                            "why you chose this move — unlike 'message', "
+                            "it is never returned by this or any other "
+                            "endpoint; it is kept server-side only. If it "
+                            "becomes the engine's turn afterward, gnuchess "
+                            "replies immediately and its move is returned "
+                            "as 'engine_move'.",
+        },
+        "GET /api/game/wait": {
+            "query": {"color": "white|black",
+                      "timeout": f"seconds, optional, default {WAIT_DEFAULT_TIMEOUT_SECONDS}, "
+                                 f"max {WAIT_MAX_TIMEOUT_SECONDS}"},
+            "description": "Block until it is 'color's turn, the game "
+                            "ends, or 'timeout' seconds pass — whichever "
+                            "comes first — then return {'state': ...}. "
+                            "Returns immediately if it is already that "
+                            "side's turn, the game already ended, or no "
+                            "game has started. A timeout looks the same "
+                            "as any other return; check 'state.turn' "
+                            "yourself. Lets a side wait for its opponent's "
+                            "move with one call instead of polling "
+                            "GET /api/game in a loop.",
+        },
+        "POST /api/game/chat": {
+            "body": {"color": "white|black", "message": "up to 240 chars"},
+            "description": "Send a standalone chat message ('banter') "
+                            "from 'color', not attached to any particular "
+                            "move (contrast with 'message' on "
+                            "POST /api/game/move). Visible to everyone who "
+                            "reads the game state afterward, in "
+                            "'chat_log', including a person watching the "
+                            "board viewer. Requires a game to exist, but "
+                            "not that it still be in progress. Returns "
+                            "the created entry.",
         },
         "POST /api/game/resign": {
             "body": {"player": "white|black"},
@@ -158,13 +197,35 @@ def create_api_app(game):
         body = request.get_json(silent=True) or {}
         move_str = body.get("move")
         message = body.get("message")
+        reasoning = body.get("reasoning")
         if not move_str:
             return error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
         try:
-            player_move, engine_move = game.make_move(move_str, message=message)
+            player_move, engine_move = game.make_move(move_str, message=message, reasoning=reasoning)
         except GameError as e:
             return error(str(e))
         return jsonify(move=player_move, engine_move=engine_move, state=game.state())
+
+    @app.get("/api/game/wait")
+    def get_wait():
+        color = request.args.get("color")
+        timeout = request.args.get("timeout", type=float)
+        try:
+            state = game.wait_for_turn(color, timeout=timeout)
+        except GameError as e:
+            return error(str(e))
+        return jsonify(state=state)
+
+    @app.post("/api/game/chat")
+    def post_chat():
+        body = request.get_json(silent=True) or {}
+        color = body.get("color")
+        message = body.get("message")
+        try:
+            entry = game.send_chat(color, message)
+        except GameError as e:
+            return error(str(e))
+        return jsonify(chat=entry, state=game.state())
 
     @app.post("/api/game/resign")
     def post_resign():

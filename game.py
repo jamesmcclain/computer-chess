@@ -72,6 +72,16 @@ AUTOPLAY_PAUSE_SECONDS = 1.0
 # add-on to a move, not something worth failing the move over.
 NAME_MAX_LEN = 40
 MESSAGE_MAX_LEN = 240
+# "reasoning" is a private note an API user can attach to their own move
+# (see make_move()) — never returned by any endpoint, so it's allowed a
+# little more room than a chat message.
+REASONING_MAX_LEN = 1000
+
+# Bounds for GET /api/game/wait's blocking wait — see ChessGame.wait_for_turn.
+# The cap keeps a single request from tying up a server thread indefinitely
+# (or running into a reverse proxy's own request timeout).
+WAIT_DEFAULT_TIMEOUT_SECONDS = 25
+WAIT_MAX_TIMEOUT_SECONDS = 55
 
 
 def describe_levels():
@@ -124,8 +134,21 @@ class ChessGame:
         self.started = False
         self.result_reason = None    # set to "resigned" on resignation
         self.resigned_by = None      # "white" | "black"
-        self.move_log = []           # [{"ply","color","uci","san","by","name","message"}, ...]
+        self.move_log = []           # [{"ply","color","uci","san","by","name","message","ts"}, ...]
         self.created_at = None
+        # Standalone chat ("banter") — not attached to any particular
+        # move, and visible to everyone, unlike self._reasoning_log below.
+        # Reset every new_game() (see new_game()), since it's a
+        # conversation about that specific game, not a sticky preference
+        # like engine_levels or player_names.
+        self.chat_log = []           # [{"seq","color","name","message","ts"}, ...]
+        # Optional private note an API user can attach to their own move
+        # via make_move()'s `reasoning` argument. Deliberately kept out of
+        # move_log/state()/every other read endpoint — "not shared with
+        # the other player" means not shared with anyone over the API,
+        # since there is no authentication to tell players apart. Reset
+        # every new_game(), same as chat_log.
+        self._reasoning_log = []     # [{"ply","color","reasoning","ts"}, ...]
         # Difficulty is per side, not per game, so an engine-vs-engine game
         # can pit two different strengths against each other. For a game
         # with only one "engine" side, only that side's entry is ever read.
@@ -199,6 +222,8 @@ class ChessGame:
             self.result_reason = None
             self.resigned_by = None
             self.move_log = []
+            self.chat_log = []
+            self._reasoning_log = []
             self.created_at = time.time()
             self._generation += 1
             generation = self._generation
@@ -387,7 +412,7 @@ class ChessGame:
         # any chat log always have something readable to show.
         name = self.player_names.get(color) or "GNU Chess"
         entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san,
-                  "by": "engine", "name": name}
+                  "by": "engine", "name": name, "ts": time.time()}
         self.move_log.append(entry)
         return entry
 
@@ -451,6 +476,38 @@ class ChessGame:
             self._change_cond.wait(timeout)
             return self.state(), self._version
 
+    def wait_for_turn(self, color, timeout=None):
+        """Block until it is `color`'s turn to move, the game ends, or
+        `timeout` seconds elapse (default WAIT_DEFAULT_TIMEOUT_SECONDS,
+        capped at WAIT_MAX_TIMEOUT_SECONDS) — whichever comes first.
+        Returns the state at that point; the caller should check
+        `state["turn"]` themselves, since a timeout looks the same as any
+        other return here. Used by GET /api/game/wait so an API user can
+        wait for their opponent's move with a single blocking call
+        instead of a poll loop.
+
+        Returns immediately, without blocking at all, if it is already
+        `color`'s turn, the game has already ended, or no game has
+        started — there is nothing to wait for in any of those cases.
+        """
+        if color not in ("white", "black"):
+            raise GameError("'color' must be 'white' or 'black'")
+        timeout = WAIT_DEFAULT_TIMEOUT_SECONDS if timeout is None else float(timeout)
+        timeout = max(0.0, min(timeout, WAIT_MAX_TIMEOUT_SECONDS))
+        deadline = time.time() + timeout
+
+        with self._lock:
+            state = self.state()
+            version = self._version
+
+        while True:
+            if not state["started"] or state["game_over"] or state["turn"] == color:
+                return state
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return state
+            state, version = self.wait_for_change(version, timeout=remaining)
+
     def state(self):
         with self._lock:
             board = self.board
@@ -472,6 +529,7 @@ class ChessGame:
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
                 "move_log": list(self.move_log),
+                "chat_log": list(self.chat_log),
             }
 
     def legal_moves(self, from_square=None):
@@ -495,18 +553,25 @@ class ChessGame:
                 })
             return moves
 
-    def make_move(self, move_str, message=None):
+    def make_move(self, move_str, message=None, reasoning=None):
         """Submit a move for whichever side is currently to move — works
         the same whether that side is 'api-user' or 'web-user'; only
-        'engine' turns are rejected here (gnuchess moves itself). `message`
-        (optional) is a short chat line attached to this move — it and
-        this side's current display name (see set_name()) are stamped
-        onto the move-log entry, so anyone who reads the game state after
-        this point (in particular, the opponent's own next call) sees
-        them; there is no separate delivery step. Returns
-        (player_move_entry, engine_entry_or_None) — the engine entry is
-        set if, after this move, it becomes an 'engine' side's turn and
-        gnuchess replies immediately."""
+        'engine' turns are rejected here (gnuchess moves itself).
+
+        `message` (optional) is a short chat line attached to this move —
+        it and this side's current display name (see set_name()) are
+        stamped onto the move-log entry, so anyone who reads the game
+        state after this point (in particular, the opponent's own next
+        call) sees them; there is no separate delivery step.
+
+        `reasoning` (optional) is a private note about why this move was
+        chosen. Unlike `message`, it is never returned by this or any
+        other method — it is only kept in self._reasoning_log, which no
+        endpoint reads from. See that attribute's comment in __init__.
+
+        Returns (player_move_entry, engine_entry_or_None) — the engine
+        entry is set if, after this move, it becomes an 'engine' side's
+        turn and gnuchess replies immediately."""
         with self._lock:
             if not self.started:
                 raise GameError("no game in progress; POST /api/game to start one")
@@ -521,12 +586,20 @@ class ChessGame:
             san = self.board.san(move)
             uci = move.uci()
             self.board.push(move)
-            player_entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san,
-                              "by": mover_type, "name": self.player_names.get(color)}
+            ply = len(self.move_log) + 1
+            player_entry = {"ply": ply, "color": color, "uci": uci, "san": san,
+                              "by": mover_type, "name": self.player_names.get(color),
+                              "ts": time.time()}
             clean_message = self._clean_text(message, MESSAGE_MAX_LEN)
             if clean_message is not None:
                 player_entry["message"] = clean_message
             self.move_log.append(player_entry)
+
+            clean_reasoning = self._clean_text(reasoning, REASONING_MAX_LEN)
+            if clean_reasoning is not None:
+                self._reasoning_log.append(
+                    {"ply": ply, "color": color, "reasoning": clean_reasoning, "ts": time.time()}
+                )
 
             engine_entry = None
             if self._status() == "in_progress" and self._current_player_type() == "engine":
@@ -534,6 +607,35 @@ class ChessGame:
 
             self._bump_version_locked()
             return player_entry, engine_entry
+
+    def send_chat(self, color, message):
+        """Add a standalone chat line ("banter") — not attached to any
+        particular move, unlike `message` on make_move(). `color` is
+        'white' or 'black'; the message is stamped with that side's
+        current display name (see set_name()). Visible to everyone who
+        reads the game state (state()["chat_log"]), including a person
+        watching the board viewer. Requires a game to exist (so there is
+        something for the chat to be about), but not that it still be in
+        progress — a "gg" after the game ends is fine. Returns the
+        created entry."""
+        if color not in ("white", "black"):
+            raise GameError("'color' must be 'white' or 'black'")
+        clean_message = self._clean_text(message, MESSAGE_MAX_LEN)
+        if clean_message is None:
+            raise GameError("'message' is required")
+        with self._lock:
+            if not self.started:
+                raise GameError("no game in progress; POST /api/game to start one")
+            entry = {
+                "seq": len(self.chat_log) + 1,
+                "color": color,
+                "name": self.player_names.get(color),
+                "message": clean_message,
+                "ts": time.time(),
+            }
+            self.chat_log.append(entry)
+            self._bump_version_locked()
+            return entry
 
     def resign(self, player):
         player = (player or "").strip().lower()
