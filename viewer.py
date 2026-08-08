@@ -265,9 +265,9 @@ let catalogue = { boards: { sets: [], darks: [], lights: [] }, pieces: { sets: [
 
 const style = {
   boardMode: lsGet("boardMode", "matched"),      // "matched" | "independent"
-  boardSet: lsGet("boardSet", null),
-  boardLight: lsGet("boardLight", null),
-  boardDark: lsGet("boardDark", null),
+  boardSet: lsGet("boardSet", "mahogany_ash"),
+  boardLight: lsGet("boardLight", "ash"),
+  boardDark: lsGet("boardDark", "mahogany"),
   pieceMode: lsGet("pieceMode", "matched"),       // "matched" | "independent"
   pieceSet: lsGet("pieceSet", null),
   pieceWhite: lsGet("pieceWhite", null),

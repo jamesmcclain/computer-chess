@@ -1,10 +1,10 @@
-# Dockerfile — GNU Chess REST API
+# Dockerfile — computer-chess
 #
 # Build:
-#   docker build -t gnuchess-api .
+#   docker build -t computer-chess .
 #
 # Run:
-#   docker run -it --rm -p 5003:5003 -p 5004:5004 gnuchess-api
+#   docker run -it --rm -p 5003:5003 -p 5004:5004 computer-chess
 #
 # Port 5003: REST API (start games, submit moves, query state — no auth).
 # Port 5004: read-only web viewer of the current board (no input).

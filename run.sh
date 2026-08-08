@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run.sh — Build (if needed) and run the gnuchess-api container.
+# run.sh — Build (if needed) and run the computer-chess container.
 #
 # Usage:
 #   ./run.sh                             # build (if needed) and run
@@ -13,7 +13,7 @@
 # Try it from another terminal:
 #   curl -X POST http://localhost:5003/api/game \
 #     -H 'Content-Type: application/json' \
-#     -d '{"white": "human", "black": "engine"}'
+#     -d '{"white": "api-user", "black": "engine"}'
 #
 #   curl http://localhost:5003/api/game
 #
@@ -27,8 +27,8 @@
 
 set -euo pipefail
 
-IMAGE_NAME="gnuchess-api"
-CONTAINER_NAME="gnuchess-api"
+IMAGE_NAME="computer-chess"
+CONTAINER_NAME="computer-chess"
 API_PORT="${API_PORT:-5003}"
 VIEWER_PORT="${VIEWER_PORT:-5004}"
 

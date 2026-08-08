@@ -13,10 +13,10 @@ API_DOC = {
                     "game replaces any game already in progress.",
     "endpoints": {
         "POST /api/game": {
-            "body": {"white": "human|engine", "black": "human|engine",
+            "body": {"white": "api-user|engine", "black": "api-user|engine",
                      "level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional"},
             "description": "Start a new game. At least one side must be "
-                            "'human'. 'level' sets gnuchess's difficulty "
+                            "'api-user'. 'level' sets gnuchess's difficulty "
                             "for this game (omit to keep whatever level "
                             "was last set); see GET /api/engine-levels. "
                             "If white is 'engine', gnuchess's opening "
@@ -76,7 +76,7 @@ def create_api_app(game):
     @app.post("/api/game")
     def new_game():
         body = request.get_json(silent=True) or {}
-        white = body.get("white", "human")
+        white = body.get("white", "api-user")
         black = body.get("black", "engine")
         level = body.get("level")
         try:

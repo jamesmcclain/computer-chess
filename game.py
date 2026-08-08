@@ -92,8 +92,8 @@ class ChessGame:
         self._engine = None
 
         self.board = chess.Board()
-        self.white_type = None       # "human" | "engine"
-        self.black_type = None       # "human" | "engine"
+        self.white_type = None       # "api-user" | "engine"
+        self.black_type = None       # "api-user" | "engine"
         self.started = False
         self.result_reason = None    # set to "resigned" on resignation
         self.resigned_by = None      # "white" | "black"
@@ -123,7 +123,7 @@ class ChessGame:
     # ---- game lifecycle -----------------------------------------------------
 
     def new_game(self, white, black, level=None):
-        """Start a fresh game. `white`/`black` are each 'human' or 'engine'.
+        """Start a fresh game. `white`/`black` are each 'api-user' or 'engine'.
         `level` (optional, 1-10) sets GNU Chess's difficulty for this
         game; if omitted, whatever level was last set (or the default)
         carries over. Returns (state_dict, engine_move_or_None) —
@@ -131,11 +131,11 @@ class ChessGame:
         immediately."""
         white = (white or "").strip().lower()
         black = (black or "").strip().lower()
-        if white not in ("human", "engine") or black not in ("human", "engine"):
-            raise GameError("'white' and 'black' must each be 'human' or 'engine'")
+        if white not in ("api-user", "engine") or black not in ("api-user", "engine"):
+            raise GameError("'white' and 'black' must each be 'api-user' or 'engine'")
         if white == "engine" and black == "engine":
             raise GameError(
-                "at least one side must be 'human' — this server supports two "
+                "at least one side must be 'api-user' — this server supports two "
                 "outside players, or one outside player against gnuchess"
             )
         if level is not None:
@@ -359,7 +359,7 @@ class ChessGame:
                 raise GameError("no game in progress; POST /api/game to start one")
             if self._status() != "in_progress":
                 raise GameError(f"game is not in progress (status: {self._status()})")
-            if self._current_player_type() != "human":
+            if self._current_player_type() != "api-user":
                 raise GameError("it is the engine's turn; wait for its move")
 
             move = self._parse_move(move_str)
@@ -367,7 +367,7 @@ class ChessGame:
             san = self.board.san(move)
             uci = move.uci()
             self.board.push(move)
-            player_entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san, "by": "human"}
+            player_entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san, "by": "api-user"}
             self.move_log.append(player_entry)
 
             engine_entry = None
