@@ -15,6 +15,18 @@ place of these defaults everywhere below.
 
 Core facts to remember:
 
+- You play one and only one side of a game (black or white) never
+  both in the same game.
+- **`for` loops are strictly prohibited, in the shell and in Python
+  alike.** Make one API call per move. Stop and think about that move
+  before you submit it. A loop skips the thinking step and can play
+  out a whole game blind, with no narration and no real decisions.
+  See section 4.1.
+- **Once told to start or join a game, keep playing until it ends.**
+  Submit moves and wait for turns (section 4.3) one at a time, on
+  your own, without a stop for user input between moves. Stop only if
+  the user explicitly tells you to stop. `state.game_over` tells you
+  when the game has ended (section 5).
 - **One game is active at a time.** A new game replaces any game in
   progress.
 - **A side has one of three types.** `"api-user"` (an outside caller
@@ -31,21 +43,27 @@ Core facts to remember:
   over anything you remember from earlier in the conversation. You
   cannot predict the engine's moves, or another person's moves, in
   advance.
-- **Do not check the turn in a tight loop.** `state.turn` (from
+- **Do not poll the turn in a tight loop.** `state.turn` (from
   `GET /api/game`) names the side to move. If it is not your turn,
   use `GET /api/game/wait` instead of polling — it blocks until your
-  turn comes up. See section 4.3.
+  turn comes up. See section 4.3. This is separate from the `for`-loop
+  ban above. That rule bans a code loop that submits moves. This rule
+  bans a code loop that checks the same state over and over.  Use
+  of `sleep` is utterly forbidden.
 - **Always narrate your thinking to the user.** Say something after
   you see an opponent's move, and again before you submit your own
   move. Section 4.1 gives the exact points to do this at. This is
   separate from in-game chat (next bullet): narration is what you
-  tell the person in this conversation.
-- **You can set a display name, attach a short chat line to a move,
-  and record private reasoning.** All three are optional. Your
-  opponent and anyone at the board viewer see the name and chat.
-  Reasoning stays private while the game is in progress (section 2
-  covers the transcript exception). There is no standalone chat
-  channel — chat always goes out with a move. See section 2.
+  tell the person in this conversation. Narrating is not the same as
+  stopping — keep narrating and playing without a pause for user
+  input, per the second bullet above.
+- **`chat` and `reasoning` are optional at the API level, but this
+  skill requires both on every move.** Send one of each with every
+  `POST /api/game/move` call. `chat` is for banter and trash talk
+  only — never put strategy in it, since your opponent and anyone at
+  the board viewer read it. `reasoning` is where your strategy and
+  analysis go — it stays private while the game is in progress.
+  Display name (also in section 2) stays optional.
 - **You can "phone a friend" for a move recommendation, since you are
   always `"api-user"`.** This asks GNU Chess for its move choice in
   the current position, without submitting that move or ending your
@@ -114,8 +132,11 @@ Keep `state`: `state.turn` names the side to move next.
 
 ## 2. Setting your name, chatting, and recording your reasoning
 
-All three features below are optional. They do not affect move
-legality or turn order. Skip any the user did not ask for.
+Display name is optional and cosmetic — skip it unless the user asks
+for one. `chat` and `reasoning` are different: the API marks both
+optional, but this skill requires you to send both with every move.
+They serve opposite purposes — see below. None of the three affects
+move legality or turn order.
 
 **Display name.** Set one with:
 
@@ -141,15 +162,20 @@ Content-Type: application/json
   after.
 
 **Chat attached to a move.** Attach a short line to a move with the
-`chat` field on `POST /api/game/move` (section 4.2). There is no
-standalone chat channel — every chat line goes out with a move:
+`chat` field on `POST /api/game/move` (section 4.2). Send one with
+every move — this skill requires it, even though the API accepts a
+move without one. There is no standalone chat channel — every chat
+line goes out with a move:
 
 ```json
 {"move": "e2e4", "chat": "Good luck!"}
 ```
 
-- `chat` can be up to 240 characters. Longer text is cut short. Leave
-  it out for a plain move with no chat.
+- `chat` is for banter and trash talk only. Never put strategy, a
+  plan, or analysis in it — your opponent and anyone at the board
+  viewer read it right away. Put strategy in `reasoning` instead
+  (below).
+- `chat` can be up to 240 characters. Longer text is cut short.
 - There is no separate inbox. The API stamps your chat onto that
   move's entry in `move_log`. Your opponent sees it the next time
   they read the game state: in the response to their own next move,
@@ -158,31 +184,31 @@ standalone chat channel — every chat line goes out with a move:
 - To read a chat line from your opponent, check their latest
   `move_log` entry for a `chat` field. This is the same place you
   check to see what move they made (section 4.1, step 3).
-- To say something not tied to a move — a greeting, or "gg" at the
-  end — attach it to a move you submit anyway. Use your first move,
-  or your last move before you resign. You cannot send chat without a
-  move.
+- For a line not tied to a move — a greeting, or "gg" at the end —
+  attach it to a move you submit anyway. Use your first move, or your
+  last move before you resign. You cannot send chat without a move.
 
-**Private reasoning.** `reasoning` (optional, up to 1000 characters,
-also cut short, not rejected) is a second field on
-`POST /api/game/move`, alongside `chat`:
+**Private reasoning.** `reasoning` (up to 1000 characters, also cut
+short, not rejected) is a second field on `POST /api/game/move`,
+alongside `chat`. Send one with every move — this skill requires it,
+even though the API accepts a move without one:
 
 ```json
 {"move": "e2e4", "reasoning": "e4 grabs the center and opens lines for the bishop and queen."}
 ```
 
+- `reasoning` holds your strategy: the analysis and plan behind the
+  move. This is the opposite of `chat` — keep strategy out of `chat`,
+  and keep banter out of `reasoning`.
 - Unlike `chat`, no endpoint returns `reasoning` while the game is in
   progress. The server keeps it alone — not shown to your opponent,
   anyone at the board viewer, or even back to you on a later read.
   One exception: once the game ends, it goes into that game's PGN
   transcript (section 5.1), since no advantage is left to protect.
-  Use it when the user wants their move-by-move thinking recorded for
-  later review. This is separate from what you say to the user
-  directly (the "narrate your thinking" core fact), and separate from
-  `chat`, which your opponent sees at once.
 - This is not the plain-language explanation you give the user before
   each move (section 4.1, step 4). Give both — one does not replace
-  the other.
+  the other. Narration talks to the user in this conversation.
+  `reasoning` is a permanent record kept on the server.
 
 ## 3. Joining a game already in progress
 
@@ -228,6 +254,11 @@ matches that color.
 
 ### 4.1 The move loop
 
+This is a loop you perform yourself, turn by turn — never a `for`
+loop or any other code loop. Make one tool call at a time, and think
+about each move before you submit it. Do not write a script that
+plays several moves in a row without a stop for thought between them.
+
 Repeat this loop for each of your turns:
 
 1. Query legal moves with curl:
@@ -248,15 +279,18 @@ Repeat this loop for each of your turns:
 4. Choose a legal move. Before you submit it, tell the user the idea
    behind it: what it does for your position, and why you picked it
    over the alternatives. Give this explanation every time, not only
-   for unusual moves. You can also add a short `chat` (section 2): a
-   greeting, a comment on the position, anything brief.
-5. Submit the move with curl:
+   for unusual moves. Also write your `reasoning` (your strategy —
+   section 2) and a `chat` line (banter only, no strategy — section
+   2). This skill requires both on every move.
+5. Submit the move with curl, `chat` and `reasoning` included:
    ```bash
    curl -X POST http://10.0.2.2:5003/api/game/move \
      -H 'Content-Type: application/json' \
-     -d '{"move": "e2e4", "chat": "Good luck!"}'
+     -d '{"move": "e2e4", "chat": "Good luck!", "reasoning": "e4 grabs the center and opens lines for the bishop and queen."}'
    ```
-6. Repeat from step 1 until the game ends (section 5).
+6. Repeat from step 1 until the game ends (section 5). Do this on
+   your own, one turn at a time, with no stop for user input between
+   moves. Stop only if the user explicitly tells you to stop.
 
 A non-null `engine_move` in the response is the engine's reply. Treat
 it like any opponent move: narrate it (step 3) at the start of your
@@ -279,8 +313,10 @@ promotion), `san` (for example, `"e4"`, `"Nf3"`, `"O-O"`), `from`,
 `to`, and `promotion`.
 
 Submit a move. UCI and SAN both work — use UCI, since it has only one
-meaning. `chat` and `reasoning` (both optional, section 2) attach a
-chat line and a private note:
+meaning. `chat` and `reasoning` (section 2) attach a chat line and a
+private note. The API marks both optional, but this skill requires
+you to send both, every time: `chat` for banter, `reasoning` for your
+strategy.
 
 ```
 POST /api/game/move
@@ -319,7 +355,9 @@ Response:
 
 If it is not your turn, wait for your opponent (an `"api-user"` or
 `"web-user"`, not the engine) with one blocking call, instead of a
-poll loop:
+poll loop. Make this call yourself, on your own, as the next step in
+the loop — this is not a stop for user input. Tell the user you are
+waiting, then keep going once your turn comes up:
 
 ```
 GET /api/game/wait?color=white&timeout=25
@@ -338,7 +376,8 @@ GET /api/game/wait?color=white&timeout=25
   for their move before you make this call.
 
 To keep the conversation moving while you wait, poll `GET /api/game`
-instead, with a real pause between calls:
+instead, with a real pause between calls. Make each check its own
+tool call — never a `for` loop that polls in code:
 
 ```
 GET /api/game        # check, think for a few seconds, check again — not a rapid loop
