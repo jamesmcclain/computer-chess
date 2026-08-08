@@ -29,7 +29,7 @@ reference as machine-readable JSON.
 ### `POST /api/game` — start a new game
 
 ```json
-{"white": "human", "black": "engine"}
+{"white": "human", "black": "engine", "level": 5}
 ```
 
 `white` and `black` are each `"human"` (an outside player who will submit
@@ -37,14 +37,49 @@ moves via this API) or `"engine"` (GNU Chess). At least one side must be
 `"human"` — two outside players, or one outside player vs. GNU Chess, are
 both supported; GNU Chess playing itself is not.
 
+`level` (optional, `1`-`10`, weakest to strongest) sets GNU Chess's
+difficulty for this game. Omit it to keep whatever level was last set
+(default `5`). See `GET /api/engine-levels` and `POST /api/game/level`
+below.
+
 If `white` is `"engine"`, GNU Chess's opening move is played immediately
 and returned in the response as `engine_move`.
 
 Response: `201` with `{"state": {...}, "engine_move": {...} | null}`.
 
+### `GET /api/game/legal-moves` — legal moves for the side to move
+
+Optional query param `from=e2` restricts to moves starting on that square.
+
+```json
+{"moves": [{"uci": "e2e4", "san": "e4", "from": "e2", "to": "e4", "promotion": null}, ...], "count": 20}
+```
+
+### `GET /api/engine-levels` — list difficulty levels
+
+```json
+{"levels": [{"level": 1, "depth": 1, "max_time_seconds": 0.2}, ..., {"level": 10, "depth": 15, "max_time_seconds": 5.0}], "default": 5}
+```
+
+GNU Chess's UCI mode has no built-in "Skill Level"/Elo option, so
+difficulty is approximated the standard way for UCI engines: capping how
+deep it's allowed to search (`depth`), with a time cap (`max_time_seconds`)
+as a safety net. Level 1 plays weak, often-obvious moves almost
+instantly; level 10 searches much deeper and can take up to its time cap.
+
+### `POST /api/game/level` — change GNU Chess's difficulty
+
+```json
+{"level": 8}
+```
+
+Works whether or not a game is currently running, and takes effect on
+GNU Chess's next move. Response: `{"level": 8}`.
+
 ### `GET /api/game` — current state
 
-Returns the board, whose turn it is, game status, move history, etc.:
+Returns the board, whose turn it is, game status, move history, etc.
+**This is also how to check whose turn it is** — see `turn` below.
 
 ```json
 {
@@ -58,6 +93,7 @@ Returns the board, whose turn it is, game status, move history, etc.:
   "board_ascii": "r n b q k b n r\n...",
   "board": [[{"color": "white", "type": "P", "code": "wP"}, null, ...], ...],
   "players": {"white": "human", "black": "engine"},
+  "engine_level": 5,
   "fullmove_number": 1,
   "halfmove_clock": 0,
   "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "human"}]
@@ -71,13 +107,10 @@ Returns the board, whose turn it is, game status, move history, etc.:
 
 `404` if no game has been started yet.
 
-### `GET /api/game/legal-moves` — legal moves for the side to move
-
-Optional query param `from=e2` restricts to moves starting on that square.
-
-```json
-{"moves": [{"uci": "e2e4", "san": "e4", "from": "e2", "to": "e4", "promotion": null}, ...], "count": 20}
-```
+Don't poll this endpoint in a tight loop just to check whose turn it is
+— if you're waiting on an opponent, space requests out by at least a
+couple of seconds (or better, use the SSE stream on port 5004 described
+below, which pushes a new state the instant the game actually changes).
 
 ### `POST /api/game/move` — submit a move
 

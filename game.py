@@ -20,7 +20,44 @@ import time
 import chess
 import chess.engine
 
-DEFAULT_ENGINE_MOVE_TIME = 1.0  # seconds gnuchess is given to pick a move
+# GNU Chess's UCI mode doesn't expose a Stockfish-style "Skill Level"/Elo
+# option (checked via `engine.options` — it only has search-tuning knobs
+# like Hash, NullMove Pruning, etc.). The standard way to approximate a
+# difficulty dial for a UCI engine like this is to cap how hard it's
+# allowed to search: a shallow search-depth limit plays weak, obviously
+# suboptimal moves, while a deep one plays strong. Each level pairs a
+# depth cap with a generous time cap (a safety net in case some position
+# is slow to search to the target depth, not the primary lever) — so
+# actual strength/thinking time will vary a bit with position complexity,
+# same as it would for any depth-limited engine.
+LEVEL_MIN = 1
+LEVEL_MAX = 10
+DEFAULT_LEVEL = 5
+
+LEVEL_TUNING = {
+    1:  {"depth": 1,  "time": 0.2},
+    2:  {"depth": 2,  "time": 0.3},
+    3:  {"depth": 3,  "time": 0.4},
+    4:  {"depth": 4,  "time": 0.6},
+    5:  {"depth": 5,  "time": 0.8},
+    6:  {"depth": 6,  "time": 1.2},
+    7:  {"depth": 8,  "time": 1.8},
+    8:  {"depth": 10, "time": 2.5},
+    9:  {"depth": 12, "time": 3.5},
+    10: {"depth": 15, "time": 5.0},
+}
+
+
+def describe_levels():
+    """List of {"level", "depth", "max_time_seconds"} for every valid
+    level, plus the default — used by GET /api/engine-levels."""
+    return {
+        "levels": [
+            {"level": lvl, "depth": t["depth"], "max_time_seconds": t["time"]}
+            for lvl, t in sorted(LEVEL_TUNING.items())
+        ],
+        "default": DEFAULT_LEVEL,
+    }
 
 
 def _find_gnuchess():
@@ -45,7 +82,7 @@ class GameError(Exception):
 
 
 class ChessGame:
-    def __init__(self, engine_move_time=DEFAULT_ENGINE_MOVE_TIME):
+    def __init__(self):
         self._lock = threading.RLock()
         # Condition shares the same lock, so mutating state and notifying
         # waiters can happen atomically inside the `with self._lock:`
@@ -53,7 +90,6 @@ class ChessGame:
         self._change_cond = threading.Condition(self._lock)
         self._version = 0  # bumped on every state-changing operation
         self._engine = None
-        self._engine_move_time = engine_move_time
 
         self.board = chess.Board()
         self.white_type = None       # "human" | "engine"
@@ -63,6 +99,7 @@ class ChessGame:
         self.resigned_by = None      # "white" | "black"
         self.move_log = []           # [{"ply","color","uci","san","by"}, ...]
         self.created_at = None
+        self.engine_level = DEFAULT_LEVEL  # 1 (weakest) .. 10 (strongest)
 
     # ---- engine lifecycle -------------------------------------------------
 
@@ -85,10 +122,13 @@ class ChessGame:
 
     # ---- game lifecycle -----------------------------------------------------
 
-    def new_game(self, white, black):
+    def new_game(self, white, black, level=None):
         """Start a fresh game. `white`/`black` are each 'human' or 'engine'.
-        Returns (state_dict, engine_move_or_None) — engine_move is set if
-        white is 'engine', since it then moves immediately."""
+        `level` (optional, 1-10) sets GNU Chess's difficulty for this
+        game; if omitted, whatever level was last set (or the default)
+        carries over. Returns (state_dict, engine_move_or_None) —
+        engine_move is set if white is 'engine', since it then moves
+        immediately."""
         white = (white or "").strip().lower()
         black = (black or "").strip().lower()
         if white not in ("human", "engine") or black not in ("human", "engine"):
@@ -98,6 +138,8 @@ class ChessGame:
                 "at least one side must be 'human' — this server supports two "
                 "outside players, or one outside player against gnuchess"
             )
+        if level is not None:
+            level = self._validate_level(level)
 
         with self._lock:
             self.board = chess.Board()
@@ -108,6 +150,8 @@ class ChessGame:
             self.resigned_by = None
             self.move_log = []
             self.created_at = time.time()
+            if level is not None:
+                self.engine_level = level
 
             engine_move = None
             if self._current_player_type() == "engine":
@@ -124,6 +168,15 @@ class ChessGame:
         the viewer listens on)."""
         self._version += 1
         self._change_cond.notify_all()
+
+    def _validate_level(self, level):
+        try:
+            level = int(level)
+        except (TypeError, ValueError):
+            raise GameError(f"'level' must be an integer between {LEVEL_MIN} and {LEVEL_MAX}")
+        if not (LEVEL_MIN <= level <= LEVEL_MAX):
+            raise GameError(f"'level' must be between {LEVEL_MIN} and {LEVEL_MAX}")
+        return level
 
     def _current_player_type(self):
         return self.white_type if self.board.turn == chess.WHITE else self.black_type
@@ -209,7 +262,9 @@ class ChessGame:
         game is in progress, but handled defensively)."""
         engine = self._ensure_engine()
         color = "white" if self.board.turn == chess.WHITE else "black"
-        result = engine.play(self.board, chess.engine.Limit(time=self._engine_move_time))
+        tuning = LEVEL_TUNING.get(self.engine_level, LEVEL_TUNING[DEFAULT_LEVEL])
+        limit = chess.engine.Limit(depth=tuning["depth"], time=tuning["time"])
+        result = engine.play(self.board, limit)
         move = result.move
         if move is None:
             return None
@@ -225,6 +280,16 @@ class ChessGame:
     def is_started(self):
         with self._lock:
             return self.started
+
+    def set_level(self, level):
+        """Change GNU Chess's difficulty (1-10). Takes effect starting
+        with its next move. Can be called whether or not a game is
+        currently running."""
+        level = self._validate_level(level)
+        with self._lock:
+            self.engine_level = level
+            self._bump_version_locked()
+            return self.engine_level
 
     def wait_for_change(self, since_version, timeout=25):
         """Block until the game state has changed since `since_version`
@@ -257,6 +322,7 @@ class ChessGame:
                 "board_ascii": str(board),
                 "board": self._board_grid(),
                 "players": {"white": self.white_type, "black": self.black_type},
+                "engine_level": self.engine_level,
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
                 "move_log": list(self.move_log),

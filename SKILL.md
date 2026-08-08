@@ -23,6 +23,12 @@ Core facts to hold onto:
   `state` object in each response (or a fresh `GET /api/game`) over
   anything you remember from earlier in the conversation — GNU Chess's
   moves, in particular, you cannot predict in advance.
+- **Don't check whose turn it is in a tight loop.** `state.turn` (from
+  `GET /api/game`) tells you whose move it is, but if it's not your turn,
+  don't hammer that endpoint back-to-back waiting for it to change.
+  Between checks, spend a few seconds doing something useful — thinking
+  ahead about your reply to likely opponent moves, narrating the position
+  to the user, planning strategy — then check again. See section 3.3.
 
 ## 1. Starting a new game
 
@@ -30,7 +36,7 @@ Core facts to hold onto:
 POST /api/game
 Content-Type: application/json
 
-{"white": "human", "black": "engine"}
+{"white": "human", "black": "engine", "level": 5}
 ```
 
 - `white` and `black` are each `"human"` (moves come from an outside
@@ -42,6 +48,13 @@ Content-Type: application/json
   - You vs. GNU Chess, you as White: `{"white": "human", "black": "engine"}`
   - You vs. GNU Chess, you as Black: `{"white": "engine", "black": "human"}`
   - You vs. another outside player: `{"white": "human", "black": "human"}`
+- `level` (optional, `1`-`10`, weakest to strongest, default `5`) sets
+  GNU Chess's difficulty for this game — omit it to keep whatever level
+  was last set. `GET /api/engine-levels` lists what each level maps to.
+  If the user asks for an easier or harder opponent (or names a rough
+  difficulty like "beginner" or "hard"), set `level` accordingly rather
+  than guessing at move quality yourself. You can also change it anytime
+  without starting a new game: `POST /api/game/level {"level": N}`.
 - If `white` is `"engine"`, GNU Chess's first move is played immediately;
   the response's `engine_move` field holds it. Read it before doing
   anything else — if you're Black, that's the move you're responding to.
@@ -76,10 +89,10 @@ GET /api/game
   — coordinate with the user about which color they want you to play,
   then only submit moves when `state.turn` matches that color.
 - If it's the engine's turn, don't call `/api/game/move` — it will be
-  rejected with a 400 ("it is the engine's turn"). Just wait and re-poll
-  (see section 3.3) — GNU Chess replies synchronously inside the *other*
-  side's move request, so this should be brief unless nobody has moved
-  yet.
+  rejected with a 400 ("it is the engine's turn"). Just wait (see
+  section 3.3 for how to do that without hammering the API) — GNU Chess
+  replies synchronously inside the *other* side's move request, so this
+  should be brief unless nobody has moved yet.
 
 ## 3. Playing the game
 
@@ -158,20 +171,31 @@ Response:
 ### 3.3 Waiting for the other side (two-outside-player games only)
 
 If you're one side of a two-outside-player (`"human"`/`"human"`) game and
-it's not your turn, poll until it is:
+it's not your turn, don't just spin in a tight `GET /api/game` loop —
+that burns calls for no benefit and looks like you're stuck. Instead,
+each time you check and it's still not your turn, spend a few seconds
+doing something useful before checking again: think ahead about how
+you'd respond to a couple of likely opponent replies, jot down your plan,
+or just tell the user you're waiting on their move — then check once
+more:
 
 ```
-GET /api/game        # repeat every second or two
+GET /api/game        # check, think for a few seconds, check again — not a rapid loop
 ```
 
-Stop polling and react as soon as `state.turn` becomes your color, or
-`state.game_over` becomes `true`.
+Stop checking and react as soon as `state.turn` becomes your color, or
+`state.game_over` becomes `true`. (If you'd rather not poll at all, the
+board viewer's event stream at `GET http://10.0.2.2:5004/events` —
+Server-Sent Events — pushes a fresh state the instant the game changes;
+it's read-only JSON and not documented as a control API, but nothing
+stops you from reading it while waiting.)
 
 ### 3.4 Watching without playing
 
-`GET http://10.0.2.2:5004/` is a read-only HTML board (auto-refreshing)
-if the user just wants to watch — it accepts no input, so don't rely on
-it for anything except display.
+`GET http://10.0.2.2:5004/` is a read-only HTML board (updates live via
+Server-Sent Events, no manual refresh needed) if the user just wants to
+watch — it accepts no input, so don't rely on it for anything except
+display.
 
 ## 4. Recognizing the end of a game
 

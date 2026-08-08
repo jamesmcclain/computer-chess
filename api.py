@@ -6,20 +6,27 @@ submit moves for either side. All requests/responses are JSON.
 
 from flask import Flask, jsonify, request
 
-from game import GameError
+from game import GameError, LEVEL_MAX, LEVEL_MIN, describe_levels
 
 API_DOC = {
     "description": "GNU Chess REST API. One game at a time; starting a new "
                     "game replaces any game already in progress.",
     "endpoints": {
         "POST /api/game": {
-            "body": {"white": "human|engine", "black": "human|engine"},
+            "body": {"white": "human|engine", "black": "human|engine",
+                     "level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional"},
             "description": "Start a new game. At least one side must be "
-                            "'human'. If white is 'engine', gnuchess's "
-                            "opening move is played immediately and "
-                            "returned as 'engine_move'.",
+                            "'human'. 'level' sets gnuchess's difficulty "
+                            "for this game (omit to keep whatever level "
+                            "was last set); see GET /api/engine-levels. "
+                            "If white is 'engine', gnuchess's opening "
+                            "move is played immediately and returned as "
+                            "'engine_move'.",
         },
-        "GET /api/game": "Current game state (board, turn, status, move log, ...).",
+        "GET /api/game": "Current game state (board, whose turn it is, "
+                          "status, move log, engine level, ...). This is "
+                          "also how to check whose turn it is — see the "
+                          "'turn' field.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
                                       "Optional query param: from=e2",
         "POST /api/game/move": {
@@ -32,6 +39,15 @@ API_DOC = {
         "POST /api/game/resign": {
             "body": {"player": "white|black"},
             "description": "Resign on behalf of a side, ending the game.",
+        },
+        "GET /api/engine-levels": "List of valid gnuchess difficulty "
+                                   "levels (1=weakest..10=strongest) and "
+                                   "their search-depth/time-cap tuning.",
+        "POST /api/game/level": {
+            "body": {"level": f"{LEVEL_MIN}-{LEVEL_MAX}"},
+            "description": "Change gnuchess's difficulty. Works whether "
+                            "or not a game is running, and takes effect "
+                            "on the engine's next move.",
         },
     },
     "viewer": "A read-only board viewer is served separately on port 5004.",
@@ -62,8 +78,9 @@ def create_api_app(game):
         body = request.get_json(silent=True) or {}
         white = body.get("white", "human")
         black = body.get("black", "engine")
+        level = body.get("level")
         try:
-            state, engine_move = game.new_game(white, black)
+            state, engine_move = game.new_game(white, black, level=level)
         except GameError as e:
             return error(str(e))
         return jsonify(state=state, engine_move=engine_move), 201
@@ -104,5 +121,21 @@ def create_api_app(game):
         except GameError as e:
             return error(str(e))
         return jsonify(state=state)
+
+    @app.get("/api/engine-levels")
+    def get_engine_levels():
+        return jsonify(describe_levels())
+
+    @app.post("/api/game/level")
+    def post_level():
+        body = request.get_json(silent=True) or {}
+        level = body.get("level")
+        if level is None:
+            return error(f"'level' is required ({LEVEL_MIN}-{LEVEL_MAX})")
+        try:
+            new_level = game.set_level(level)
+        except GameError as e:
+            return error(str(e))
+        return jsonify(level=new_level)
 
     return app
