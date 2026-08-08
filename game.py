@@ -245,18 +245,19 @@ class ChessGame:
         # can pit two different strengths against each other. For a game
         # with only one "engine" side, only that side's entry is ever read.
         self.engine_levels = {"white": DEFAULT_LEVEL, "black": DEFAULT_LEVEL}
-        # Display name is also per side rather than per game — like
-        # engine_levels, it's a sticky preference that carries over into
-        # the next game unless overridden (see new_game()), since there's
-        # no login for an API user to re-announce themselves with every
-        # time. None means "no name set"; the UI then just shows the
-        # side's type ("api-user", "engine", ...) instead.
+        # Display name is per side, but unlike engine_levels it is *not*
+        # sticky across games: it's reset to "no name" at the start of
+        # every new_game() (see there), and only set for that game if
+        # white_name/black_name is passed, or set_name() is called
+        # afterward. A fresh game always starts with neither side named.
+        # None means "no name set"; the UI then just shows the side's
+        # type ("api-user", "engine", ...) instead.
         self.player_names = {"white": None, "black": None}
         # "Phone a friend" budget — see FRIEND_LEVELS/phone_a_friend()
-        # below. Unlike engine_levels/player_names, this is *not* sticky
-        # across games: it's a per-game resource budget, set fresh at
-        # each new_game() (defaulting to DEFAULT_FRIEND_LIMITS), and
-        # usage always resets to zero for a new game.
+        # below. Like player_names (and unlike engine_levels), this is
+        # *not* sticky across games: it's a per-game resource budget, set
+        # fresh at each new_game() (defaulting to DEFAULT_FRIEND_LIMITS),
+        # and usage always resets to zero for a new game.
         self.friend_limits = dict(DEFAULT_FRIEND_LIMITS)  # {5: N, 10: N}
         self.friend_used = {
             "white": {5: 0, 10: 0},
@@ -295,18 +296,20 @@ class ChessGame:
         specifically, and take priority over `level` for that side; use
         them to give the two engines in an engine-vs-engine game different
         strengths. Any level left unset keeps whatever was last set (or
-        the default). `white_name`/`black_name` (each optional) likewise
-        set that side's display name for this game, and otherwise keep
-        whatever name was last set (see set_name()). `friend_level5_limit`
+        the default). `white_name`/`black_name` (each optional) set that
+        side's display name for this game; every new game starts with
+        neither side named, regardless of what was set for the previous
+        game, so leaving one unset means that side has no name (see
+        set_name() to name it after the fact). `friend_level5_limit`
         and `friend_level10_limit` (each optional, integers, default
         DEFAULT_FRIEND_LIMITS) set this game's "phone a friend" budget —
         see phone_a_friend() — for level-5 and level-10 hints respectively.
-        Unlike the level/name settings above, these are not sticky: every
-        new game gets the defaults unless overridden here, and usage
-        always resets to zero. Returns (state_dict, engine_move_or_None) —
-        engine_move is set if white is 'engine', since it then moves
-        immediately. If both sides are 'engine', the rest of the game
-        plays out in the background — see _start_autoplay."""
+        Like the name settings, these are not sticky: every new game gets
+        the defaults unless overridden here, and usage always resets to
+        zero. Returns (state_dict, engine_move_or_None) — engine_move is
+        set if white is 'engine', since it then moves immediately. If
+        both sides are 'engine', the rest of the game plays out in the
+        background — see _start_autoplay."""
         white = (white or "").strip().lower()
         black = (black or "").strip().lower()
         if white not in PLAYER_TYPES or black not in PLAYER_TYPES:
@@ -345,10 +348,10 @@ class ChessGame:
                 self.engine_levels["white"] = white_level
             if black_level is not None:
                 self.engine_levels["black"] = black_level
-            if white_name is not None:
-                self.player_names["white"] = white_name
-            if black_name is not None:
-                self.player_names["black"] = black_name
+            # Names never carry forward from the previous game — reset to
+            # "no name" every time, then apply white_name/black_name for
+            # this game only, if given.
+            self.player_names = {"white": white_name, "black": black_name}
             self.friend_limits = {
                 5: friend_level5_limit if friend_level5_limit is not None else DEFAULT_FRIEND_LIMITS[5],
                 10: friend_level10_limit if friend_level10_limit is not None else DEFAULT_FRIEND_LIMITS[10],
@@ -603,9 +606,9 @@ class ChessGame:
         'black'. `name` is shown in the board viewer and stamped onto
         that side's move-log entries from then on; pass None (or an
         empty/whitespace-only string) to clear it back to showing just
-        the side's type. Like set_level(), this is a sticky per-side
-        setting: it carries over into the next game unless overridden
-        there (see new_game()'s white_name/black_name), and can be
+        the side's type. Unlike set_level(), this is *not* sticky across
+        games: it only applies to the current game (see new_game(),
+        which always resets both names to unset first), and can be
         called whether or not a game is currently running — useful for
         an API user who is joining a game they did not start. Returns
         the updated {"white": name_or_None, "black": name_or_None}."""

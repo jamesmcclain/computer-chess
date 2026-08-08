@@ -90,15 +90,17 @@ Content-Type: application/json
   `engine_move`. Read it before you do anything else. If you are
   Black, this is the move you respond to.
 - `white_name`/`black_name` (each optional) set that side's display
-  name for this game. See section 2 for what a name does and how to
-  set or change one later, including for a game you did not start.
+  name for this game. Names never carry over from a previous game —
+  every new game starts with neither side named. See section 2 for
+  what a name does and how to set or change one later, including for
+  a game you did not start.
 - `friend_level5_limit`/`friend_level10_limit` (each optional,
   integers, default `2` and `1`) set this game's "phone a friend"
   budget for whichever side ends up `"api-user"` — see section 4.5.
-  Unlike `level`/the name fields above, these are not sticky: every
-  new game gets the defaults unless you set them here, and usage
-  always starts at zero. Raise them if the user wants more hints
-  available, or set either to `0` to turn that tier off entirely.
+  Like the name fields above, these are not sticky: every new game
+  gets the defaults unless you set them here, and usage always starts
+  at zero. Raise them if the user wants more hints available, or set
+  either to `0` to turn that tier off entirely.
 - **Two engines watching each other is supported, for a user who wants
   to watch a game rather than play one.** Set both `white` and `black`
   to `"engine"`, optionally with different `white_level` and
@@ -137,8 +139,10 @@ Content-Type: application/json
   `POST /api/game` (section 1) only sets a name when that game is
   created.
 - Once set, your name is shown in the board viewer and stamped on
-  each of your move-log entries (see `name` in section 4.2). It stays
-  set for later games too, until changed again.
+  each of your move-log entries (see `name` in section 4.2). It does
+  *not* carry over to the next game — every new game starts with
+  neither side named, so set it again (via `white_name`/`black_name`
+  at game start, or this endpoint afterward) each time you want one.
 
 **Chat attached to a move.** Attach a short line to a move with the
 `chat` field on `POST /api/game/move` (section 4.2). There is no

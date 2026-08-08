@@ -54,17 +54,18 @@ game different strengths. Omit a level to keep its last value (default
 `5`). See `GET /api/engine-levels` and `POST /api/game/level` below.
 
 `white_name` and `black_name` (each optional, up to 40 characters) set
-that side's display name for this game. Omit either to keep whatever
-name was last set for that side — see `POST /api/game/name` below,
-which also covers a game already in progress.
+that side's display name for this game. Names never carry over from a
+previous game — every new game starts with neither side named; omit
+either to leave that side without a name. See `POST /api/game/name`
+below to set or change a name for a game already in progress.
 
 `friend_level5_limit` and `friend_level10_limit` (each optional,
 integers `0`-`50`, default `2` and `1` respectively) set this game's
 "phone a friend" budget: how many level-5 and level-10 engine hints
-an `"api-user"` side may request over the course of the game. Unlike
-`level`/the name fields above, these are not sticky — every new game
-gets the defaults shown above unless overridden here, and usage
-always resets to zero. See `POST /api/game/phone-a-friend` below.
+an `"api-user"` side may request over the course of the game. Like
+the name fields above, these are not sticky — every new game gets
+the defaults shown above unless overridden here, and usage always
+resets to zero. See `POST /api/game/phone-a-friend` below.
 
 If `white` is `"engine"` and `black` is not, GNU Chess plays its
 opening move immediately. The response returns this move as
@@ -116,13 +117,14 @@ level applies to that side's next move. Response:
 trimmed rather than rejected if longer. An empty `name` clears it back
 to showing just that side's type. This name is shown in the board
 viewer and stamped onto that side's `move_log` entries from then on
-(see `name` under `GET /api/game` below). Names are per side, not per
-game. As a result, this also covers a name for a game already in
-progress. For example, an API user joining a game they did not start
-can set a name here. The `white_name`/`black_name` fields on
-`POST /api/game` only apply when that game is created. Works with or
-without a game running. Response:
-`{"player_names": {"white": "Deep Purple", "black": null}}`.
+(see `name` under `GET /api/game` below). It applies only to the
+current game — a new game always starts with neither side named (see
+`POST /api/game` above), regardless of what was set here previously.
+Use this to set a name after a game has already started — for
+example, an API user joining a game they did not start can set a name
+here, since the `white_name`/`black_name` fields on `POST /api/game`
+only apply when that game is created. Works with or without a game
+running. Response: `{"player_names": {"white": "Deep Purple", "black": null}}`.
 
 ### `GET /api/game` — current state
 
