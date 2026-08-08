@@ -55,9 +55,17 @@ LEVEL_TUNING = {
 # "api-user" and "web-user" behave identically to the game itself (both are
 # just "a move shows up for this side eventually"); the distinction only
 # matters for display (the "by" field on a move, and which side the viewer's
-# click-to-move UI lets the current browser act on). At least one side must
-# not be "engine" — two engines playing each other is not supported.
+# click-to-move UI lets the current browser act on). Both sides can be
+# "engine" — the two engines then play each other automatically, one side
+# tuned to each side's own difficulty level (see ChessGame._start_autoplay).
 PLAYER_TYPES = ("api-user", "web-user", "engine")
+
+# Pause between moves when both sides are "engine" and the game is playing
+# itself out in the background (see ChessGame._start_autoplay). Purely for
+# spectator pacing — without it, a low-difficulty engine-vs-engine game
+# would finish in well under a second and nobody watching the viewer would
+# see it move.
+AUTOPLAY_PAUSE_SECONDS = 1.0
 
 
 def describe_levels():
@@ -101,6 +109,7 @@ class ChessGame:
         # blocks below — no separate locking dance needed.
         self._change_cond = threading.Condition(self._lock)
         self._version = 0  # bumped on every state-changing operation
+        self._generation = 0  # bumped on every new_game(); see _start_autoplay
         self._engine = None
 
         self.board = chess.Board()
@@ -111,7 +120,10 @@ class ChessGame:
         self.resigned_by = None      # "white" | "black"
         self.move_log = []           # [{"ply","color","uci","san","by"}, ...]
         self.created_at = None
-        self.engine_level = DEFAULT_LEVEL  # 1 (weakest) .. 10 (strongest)
+        # Difficulty is per side, not per game, so an engine-vs-engine game
+        # can pit two different strengths against each other. For a game
+        # with only one "engine" side, only that side's entry is ever read.
+        self.engine_levels = {"white": DEFAULT_LEVEL, "black": DEFAULT_LEVEL}
 
     # ---- engine lifecycle -------------------------------------------------
 
@@ -134,24 +146,29 @@ class ChessGame:
 
     # ---- game lifecycle -----------------------------------------------------
 
-    def new_game(self, white, black, level=None):
+    def new_game(self, white, black, level=None, white_level=None, black_level=None):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
-        ('api-user', 'web-user', 'engine'). `level` (optional, 1-10) sets
-        GNU Chess's difficulty for this game; if omitted, whatever level
-        was last set (or the default) carries over. Returns (state_dict,
-        engine_move_or_None) — engine_move is set if white is 'engine',
-        since it then moves immediately."""
+        ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
+        (optional, 1-10) sets the difficulty for both sides at once — a
+        convenience for the common one-engine case. `white_level` and
+        `black_level` (each optional, 1-10) set one side's difficulty
+        specifically, and take priority over `level` for that side; use
+        them to give the two engines in an engine-vs-engine game different
+        strengths. Any level left unset keeps whatever was last set (or
+        the default). Returns (state_dict, engine_move_or_None) —
+        engine_move is set if white is 'engine', since it then moves
+        immediately. If both sides are 'engine', the rest of the game
+        plays out in the background — see _start_autoplay."""
         white = (white or "").strip().lower()
         black = (black or "").strip().lower()
         if white not in PLAYER_TYPES or black not in PLAYER_TYPES:
             raise GameError(f"'white' and 'black' must each be one of: {', '.join(PLAYER_TYPES)}")
-        if white == "engine" and black == "engine":
-            raise GameError(
-                "both sides cannot be 'engine' — set at least one side to "
-                "'api-user' or 'web-user'"
-            )
         if level is not None:
             level = self._validate_level(level)
+        if white_level is not None:
+            white_level = self._validate_level(white_level)
+        if black_level is not None:
+            black_level = self._validate_level(black_level)
 
         with self._lock:
             self.board = chess.Board()
@@ -162,15 +179,57 @@ class ChessGame:
             self.resigned_by = None
             self.move_log = []
             self.created_at = time.time()
+            self._generation += 1
+            generation = self._generation
             if level is not None:
-                self.engine_level = level
+                self.engine_levels["white"] = level
+                self.engine_levels["black"] = level
+            if white_level is not None:
+                self.engine_levels["white"] = white_level
+            if black_level is not None:
+                self.engine_levels["black"] = black_level
 
+            both_engines = white == "engine" and black == "engine"
             engine_move = None
-            if self._current_player_type() == "engine":
+            if not both_engines and self._current_player_type() == "engine":
+                # Exactly one side is 'engine': play its move synchronously,
+                # same as before — the response's 'engine_move' reflects it.
                 engine_move = self._play_engine_move_locked()
 
             self._bump_version_locked()
-            return self.state(), engine_move
+            state = self.state()
+
+        if both_engines:
+            # Neither side will ever call POST /api/game/move, so nothing
+            # else would ever advance this game. Play it out in the
+            # background instead, one paced move at a time (see
+            # AUTOPLAY_PAUSE_SECONDS), so it streams to the viewer like any
+            # other game rather than being fully decided before this
+            # request even returns.
+            self._start_autoplay(generation)
+
+        return state, engine_move
+
+    def _start_autoplay(self, generation):
+        """Spawn a background thread that keeps playing engine moves for
+        the game started at `generation` (see self._generation) until it
+        ends or is replaced by a newer game. Only used for engine-vs-engine
+        games — see new_game()."""
+
+        def run():
+            while True:
+                time.sleep(AUTOPLAY_PAUSE_SECONDS)
+                with self._lock:
+                    if self._generation != generation:
+                        return  # this game was replaced by a newer one
+                    if self._status() != "in_progress":
+                        return  # checkmate, draw, or a resignation
+                    entry = self._play_engine_move_locked()
+                    self._bump_version_locked()
+                if entry is None:
+                    return
+
+        threading.Thread(target=run, daemon=True, name="engine-autoplay").start()
 
     # ---- internal helpers -------------------------------------------------
 
@@ -269,12 +328,14 @@ class ChessGame:
 
     def _play_engine_move_locked(self):
         """Caller must hold self._lock. Asks gnuchess for its move in the
-        current position and applies it. Returns the move log entry, or
-        None if gnuchess had no move to offer (shouldn't happen while the
-        game is in progress, but handled defensively)."""
+        current position and applies it, at the difficulty set for
+        whichever color is on move (self.engine_levels). Returns the move
+        log entry, or None if gnuchess had no move to offer (shouldn't
+        happen while the game is in progress, but handled defensively)."""
         engine = self._ensure_engine()
         color = "white" if self.board.turn == chess.WHITE else "black"
-        tuning = LEVEL_TUNING.get(self.engine_level, LEVEL_TUNING[DEFAULT_LEVEL])
+        level = self.engine_levels.get(color, DEFAULT_LEVEL)
+        tuning = LEVEL_TUNING.get(level, LEVEL_TUNING[DEFAULT_LEVEL])
         limit = chess.engine.Limit(depth=tuning["depth"], time=tuning["time"])
         result = engine.play(self.board, limit)
         move = result.move
@@ -293,15 +354,25 @@ class ChessGame:
         with self._lock:
             return self.started
 
-    def set_level(self, level):
-        """Change GNU Chess's difficulty (1-10). Takes effect starting
-        with its next move. Can be called whether or not a game is
-        currently running."""
+    def set_level(self, level, color=None):
+        """Change the engine's difficulty (1-10). `color` ('white' or
+        'black', optional) targets one side only — use this for an
+        engine-vs-engine game, where the two sides can differ. Omit
+        `color` to set both sides at once, which is all that matters for
+        a game with only one 'engine' side. Takes effect starting with
+        that side's next move. Can be called whether or not a game is
+        currently running. Returns the updated {"white": N, "black": N}."""
         level = self._validate_level(level)
+        if color is not None and color not in ("white", "black"):
+            raise GameError("'color' must be 'white' or 'black'")
         with self._lock:
-            self.engine_level = level
+            if color is None:
+                self.engine_levels["white"] = level
+                self.engine_levels["black"] = level
+            else:
+                self.engine_levels[color] = level
             self._bump_version_locked()
-            return self.engine_level
+            return dict(self.engine_levels)
 
     def wait_for_change(self, since_version, timeout=25):
         """Block until the game state has changed since `since_version`
@@ -334,7 +405,7 @@ class ChessGame:
                 "board_ascii": str(board),
                 "board": self._board_grid(),
                 "players": {"white": self.white_type, "black": self.black_type},
-                "engine_level": self.engine_level,
+                "engine_levels": dict(self.engine_levels),
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
                 "move_log": list(self.move_log),

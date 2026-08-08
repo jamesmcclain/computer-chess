@@ -40,15 +40,22 @@ same reference as JSON.
 `white` and `black` are each one of three types: `"api-user"` (an API
 user that submits moves through this API), `"engine"` (GNU Chess), or
 `"web-user"` (a person playing through the board viewer on port 5004,
-by clicking the board). Both sides cannot be `"engine"`. Every other
-combination is supported, including two API users or two web users.
+by clicking the board). Every combination is supported, including two
+engines. When both sides are `"engine"`, the two GNU Chess instances
+play each other. This game needs no further calls. It plays itself
+out in the background, one paced move at a time, so it streams to the
+board viewer like any other game.
 
-`level` (optional, `1`-`10`, weakest to strongest) sets the difficulty of
-GNU Chess for this game. Omit `level` to keep the last value (default
+`level` (optional, `1`-`10`, weakest to strongest) sets the difficulty
+for both sides at once. `white_level` and `black_level` (each optional,
+`1`-`10`) set one side's difficulty on its own, and win over `level`
+for that side. Use them to give the two engines in an engine-vs-engine
+game different strengths. Omit a level to keep its last value (default
 `5`). See `GET /api/engine-levels` and `POST /api/game/level` below.
 
-If `white` is `"engine"`, GNU Chess plays its opening move immediately.
-The response returns this move as `engine_move`.
+If `white` is `"engine"` and `black` is not, GNU Chess plays its
+opening move immediately. The response returns this move as
+`engine_move`.
 
 Response: `201` with `{"state": {...}, "engine_move": {...} | null}`.
 
@@ -73,14 +80,18 @@ search depth (`depth`), with a time limit (`max_time_seconds`) as a
 safety net. Level 1 plays weak, often-obvious moves in almost no time.
 Level 10 searches much deeper and can take up to the time limit.
 
-### `POST /api/game/level` — change the difficulty of GNU Chess
+### `POST /api/game/level` — change the difficulty of an engine side
 
 ```json
-{"level": 8}
+{"level": 8, "color": "black"}
 ```
 
-This endpoint works with or without a game in progress. The new level
-applies to GNU Chess's next move. Response: `{"level": 8}`.
+Difficulty is set per side, not per game, so an engine-vs-engine game
+can have two different strengths. Omit `color` to set both sides at
+once. This is all that matters for a game with only one `"engine"`
+side. This endpoint works with or without a game in progress. The new
+level applies to that side's next move. Response:
+`{"levels": {"white": 5, "black": 8}}`.
 
 ### `GET /api/game` — current state
 
@@ -100,7 +111,7 @@ move.
   "board_ascii": "r n b q k b n r\n...",
   "board": [[{"color": "white", "type": "P", "code": "wP"}, null, ...], ...],
   "players": {"white": "api-user", "black": "engine"},
-  "engine_level": 5,
+  "engine_levels": {"white": 5, "black": 5},
   "fullmove_number": 1,
   "halfmove_clock": 0,
   "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user"}]
@@ -170,13 +181,16 @@ picks a type for White and a type for Black:
 - `web-user` — the person at this page plays this side, by clicking
   the board (see below).
 
-If either side is `engine`, the form also shows a difficulty level.
-This form supports every combination the API supports:
+Each side that is `engine` gets its own difficulty dropdown, so an
+engine-vs-engine game can pit two different strengths against each
+other. This form supports every combination the API supports:
 
 - Two API users.
 - An API user against the engine.
 - A web user against the engine.
 - A web user against an API user.
+- Two engines. This game plays itself out, one paced move at a time,
+  with no further input needed.
 
 **Playing as a web user.** When it is a `web-user` side's turn, the
 page lets that person click a piece. Then the person clicks a

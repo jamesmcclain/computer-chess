@@ -14,18 +14,26 @@ API_DOC = {
     "endpoints": {
         "POST /api/game": {
             "body": {"white": "api-user|web-user|engine", "black": "api-user|web-user|engine",
-                     "level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional"},
+                     "level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
+                     "white_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
+                     "black_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional"},
             "description": "Start a new game, replacing any game already "
-                            "in progress. Both sides cannot be 'engine'. "
-                            "'level' sets gnuchess's difficulty "
-                            "for this game (omit to keep whatever level "
-                            "was last set); see GET /api/engine-levels. "
-                            "If white is 'engine', gnuchess's opening "
-                            "move is played immediately and returned as "
+                            "in progress. Both sides can be 'engine'; the "
+                            "two engines then play each other, paced one "
+                            "move at a time, with no further calls needed. "
+                            "'level' sets the difficulty for both sides at "
+                            "once; 'white_level'/'black_level' set one "
+                            "side's difficulty and win over 'level' for "
+                            "that side, useful for an engine-vs-engine "
+                            "game where the two sides differ. Any level "
+                            "left unset keeps whatever was last set; see "
+                            "GET /api/engine-levels. If white is 'engine' "
+                            "and black is not, gnuchess's opening move is "
+                            "played immediately and returned as "
                             "'engine_move'.",
         },
         "GET /api/game": "Current game state (board, whose turn it is, "
-                          "status, move log, engine level, ...). This is "
+                          "status, move log, engine levels, ...). This is "
                           "also how to check whose turn it is — see the "
                           "'turn' field.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
@@ -45,10 +53,16 @@ API_DOC = {
                                    "levels (1=weakest..10=strongest) and "
                                    "their search-depth/time-cap tuning.",
         "POST /api/game/level": {
-            "body": {"level": f"{LEVEL_MIN}-{LEVEL_MAX}"},
-            "description": "Change gnuchess's difficulty. Works whether "
-                            "or not a game is running, and takes effect "
-                            "on the engine's next move.",
+            "body": {"level": f"{LEVEL_MIN}-{LEVEL_MAX}",
+                     "color": "white|black, optional"},
+            "description": "Change the engine's difficulty. Omit 'color' "
+                            "to set both sides at once (all that matters "
+                            "when only one side is 'engine'); pass 'color' "
+                            "to change one side of an engine-vs-engine "
+                            "game without touching the other. Works "
+                            "whether or not a game is running, and takes "
+                            "effect on that side's next move. Returns the "
+                            "updated {'white': N, 'black': N}.",
         },
     },
     "viewer": "A board viewer is served separately on port 5004. It shows "
@@ -82,8 +96,12 @@ def create_api_app(game):
         white = body.get("white", "api-user")
         black = body.get("black", "engine")
         level = body.get("level")
+        white_level = body.get("white_level")
+        black_level = body.get("black_level")
         try:
-            state, engine_move = game.new_game(white, black, level=level)
+            state, engine_move = game.new_game(
+                white, black, level=level, white_level=white_level, black_level=black_level
+            )
         except GameError as e:
             return error(str(e))
         return jsonify(state=state, engine_move=engine_move), 201
@@ -133,12 +151,13 @@ def create_api_app(game):
     def post_level():
         body = request.get_json(silent=True) or {}
         level = body.get("level")
+        color = body.get("color")
         if level is None:
             return error(f"'level' is required ({LEVEL_MIN}-{LEVEL_MAX})")
         try:
-            new_level = game.set_level(level)
+            new_levels = game.set_level(level, color=color)
         except GameError as e:
             return error(str(e))
-        return jsonify(level=new_level)
+        return jsonify(levels=new_levels)
 
     return app

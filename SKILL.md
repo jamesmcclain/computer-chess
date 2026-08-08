@@ -50,8 +50,8 @@ Content-Type: application/json
 ```
 
 - `white` and `black` are each `"api-user"`, `"web-user"`, or
-  `"engine"` (see the core facts above for what each means).
-- Both sides cannot be `"engine"`. Every other pairing is valid.
+  `"engine"` (see the core facts above for what each means). Every
+  pairing is valid, including two engines — see the note below.
 - If you are the one playing, pick your color and set the other side
   accordingly:
   - You vs. the engine, you as White: `{"white": "api-user", "black": "engine"}`
@@ -60,17 +60,30 @@ Content-Type: application/json
   - You vs. a person on the board viewer: set the other side to
     `"web-user"`, for example `{"white": "api-user", "black": "web-user"}`.
 - `level` (optional, `1`-`10`, weakest to strongest, default `5`) sets
-  the difficulty of the engine for this game. It only matters when a
-  side is `"engine"`. Omit `level` to keep the last value.
-  `GET /api/engine-levels` lists what each level means. If the user
-  asks for an easier or harder opponent, or names a rough difficulty
-  such as "beginner" or "hard", set `level` accordingly. Do not guess
-  at move quality yourself. You can also change the level at any time,
-  without a new game: `POST /api/game/level {"level": N}`.
-- If `white` is `"engine"`, the engine plays its first move
-  immediately. The response holds this move in `engine_move`. Read it
-  before you do anything else. If you are Black, this is the move you
-  respond to.
+  the difficulty for both sides at once. It only matters for a side
+  that is `"engine"`. `white_level` and `black_level` (each optional,
+  `1`-`10`) set one side's difficulty on its own, and win over `level`
+  for that side. Use them for two engines at different strengths (see
+  below). Omit a level to keep its last value. `GET /api/engine-levels`
+  lists what each level means. If the user asks for an easier or
+  harder opponent, set the level accordingly. The same applies if they
+  name a rough difficulty, such as "beginner" or "hard". Do not guess
+  at move quality yourself. You can also change a level at any time,
+  without a new game: `POST /api/game/level {"level": N, "color": "white"}`
+  (omit `"color"` to set both sides).
+- If `white` is `"engine"` and `black` is not, the engine plays its
+  first move immediately. The response holds this move in
+  `engine_move`. Read it before you do anything else. If you are
+  Black, this is the move you respond to.
+- **Two engines watching each other is supported, for a user who wants
+  to watch a game rather than play one.** Set both `white` and `black`
+  to `"engine"`, optionally with different `white_level` and
+  `black_level`. Neither side will ever call `POST /api/game/move`. Do
+  not start this setup if the user, or you, want to play instead.
+  Nothing in section 3 applies to a game like this. The game plays
+  itself out in the background at its own pace. Watch it with
+  `GET /api/game` polling (section 3.3) or the board viewer's event
+  stream, the same as any other game.
 
 The response is `201` with `{"state": {...}, "engine_move": {...} | null}`.
 Keep `state`: `state.turn` names the side to move next.
@@ -98,6 +111,9 @@ only the color name changes.
    - If that color's type is `"engine"` or `"web-user"`, you cannot
      take over that side. Tell the user, and offer to start a fresh
      game instead (section 1) with them set to your intended color.
+   - If both colors show `"engine"`, this is a watch-only game between
+     two engines (see the note in section 1). Neither color is
+     joinable. Tell the user, and offer to start a fresh game instead.
 
 3. Read `state.status` and `state.game_over`. If the game already
    ended, do not submit a move. Report the result instead (section 4)

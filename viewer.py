@@ -185,7 +185,7 @@ PAGE = """<!doctype html>
   }
   #start-panel h2 { margin: 0 0 0.2rem; font-size: 0.95rem; font-weight: 600; color: #ddd; }
   .start-row { display: flex; align-items: center; gap: 0.6rem; }
-  .start-row label { color: #aaa; font-size: 0.82rem; width: 5rem; flex-shrink: 0; }
+  .start-row label { color: #aaa; font-size: 0.82rem; width: 6rem; flex-shrink: 0; }
   .start-row select { font-size: 0.85rem; }
   #start-btn {
     all: unset; cursor: pointer; text-align: center; margin-top: 0.3rem;
@@ -262,9 +262,12 @@ PAGE = """<!doctype html>
   <div id="start-panel">
     <h2>Start a new game</h2>
     <div class="start-row"><label>White</label><select id="start-white"></select></div>
+    <div class="start-row" id="start-white-level-row" style="display:none;">
+      <label>White level</label><select id="start-white-level"></select>
+    </div>
     <div class="start-row"><label>Black</label><select id="start-black"></select></div>
-    <div class="start-row" id="start-level-row" style="display:none;">
-      <label>Engine level</label><select id="start-level"></select>
+    <div class="start-row" id="start-black-level-row" style="display:none;">
+      <label>Black level</label><select id="start-black-level"></select>
     </div>
     <button id="start-btn">Start game</button>
     <div id="start-error"></div>
@@ -714,8 +717,13 @@ function render(state) {
   }
   statusEl.textContent = text;
 
+  const sideLabel = (color) => {
+    const type = state.players[color];
+    if (type !== "engine" || !state.engine_levels) return type;
+    return type + " (level " + state.engine_levels[color] + ")";
+  };
   metaEl.textContent =
-    "white: " + state.players.white + "  |  black: " + state.players.black +
+    "white: " + sideLabel("white") + "  |  black: " + sideLabel("black") +
     "  |  move " + state.fullmove_number;
 }
 
@@ -744,17 +752,22 @@ window.addEventListener("resize", fitBoard);
 async function initStartPanel() {
   const whiteSel = document.getElementById("start-white");
   const blackSel = document.getElementById("start-black");
-  const levelRow = document.getElementById("start-level-row");
-  const levelSel = document.getElementById("start-level");
+  const whiteLevelRow = document.getElementById("start-white-level-row");
+  const blackLevelRow = document.getElementById("start-black-level-row");
+  const whiteLevelSel = document.getElementById("start-white-level");
+  const blackLevelSel = document.getElementById("start-black-level");
   const errEl = document.getElementById("start-error");
   const startBtn = document.getElementById("start-btn");
 
   fillSelect(whiteSel, PLAYER_TYPES, "web-user");
   fillSelect(blackSel, PLAYER_TYPES, "engine");
 
+  // Each side's level control is independent: an engine-vs-engine game
+  // can (and often should, to be an interesting game to watch) pit two
+  // different difficulties against each other.
   function refreshLevelVisibility() {
-    const needsLevel = whiteSel.value === "engine" || blackSel.value === "engine";
-    levelRow.style.display = needsLevel ? "flex" : "none";
+    whiteLevelRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
+    blackLevelRow.style.display = blackSel.value === "engine" ? "flex" : "none";
   }
   whiteSel.addEventListener("change", refreshLevelVisibility);
   blackSel.addEventListener("change", refreshLevelVisibility);
@@ -765,16 +778,20 @@ async function initStartPanel() {
     const res = await fetch("/game/engine-levels");
     const data = await res.json();
     const options = (data.levels || []).map(l => ({ id: String(l.level), label: "Level " + l.level }));
-    fillSelect(levelSel, options.length ? options : fallbackLevels, String(data.default || 5));
+    const defaultId = String(data.default || 5);
+    fillSelect(whiteLevelSel, options.length ? options : fallbackLevels, defaultId);
+    fillSelect(blackLevelSel, options.length ? options : fallbackLevels, defaultId);
   } catch (e) {
-    fillSelect(levelSel, fallbackLevels, "5");
+    fillSelect(whiteLevelSel, fallbackLevels, "5");
+    fillSelect(blackLevelSel, fallbackLevels, "5");
   }
 
   startBtn.addEventListener("click", async () => {
     errEl.textContent = "";
     startBtn.textContent = "Starting\\u2026";
     const body = { white: whiteSel.value, black: blackSel.value };
-    if (levelRow.style.display !== "none") body.level = parseInt(levelSel.value, 10);
+    if (whiteSel.value === "engine") body.white_level = parseInt(whiteLevelSel.value, 10);
+    if (blackSel.value === "engine") body.black_level = parseInt(blackLevelSel.value, 10);
     try {
       const res = await fetch("/game/start", {
         method: "POST",
@@ -916,8 +933,12 @@ def create_viewer_app(game):
         white = body.get("white", "web-user")
         black = body.get("black", "engine")
         level = body.get("level")
+        white_level = body.get("white_level")
+        black_level = body.get("black_level")
         try:
-            state, engine_move = game.new_game(white, black, level=level)
+            state, engine_move = game.new_game(
+                white, black, level=level, white_level=white_level, black_level=black_level
+            )
         except GameError as e:
             return _error(str(e))
         return jsonify(state=state, engine_move=engine_move), 201
