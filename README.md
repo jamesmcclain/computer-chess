@@ -53,6 +53,11 @@ for that side. Use them to give the two engines in an engine-vs-engine
 game different strengths. Omit a level to keep its last value (default
 `5`). See `GET /api/engine-levels` and `POST /api/game/level` below.
 
+`white_name` and `black_name` (each optional, up to 40 characters) set
+that side's display name for this game. Omit either to keep whatever
+name was last set for that side — see `POST /api/game/name` below,
+which also covers a game already in progress.
+
 If `white` is `"engine"` and `black` is not, GNU Chess plays its
 opening move immediately. The response returns this move as
 `engine_move`.
@@ -93,6 +98,24 @@ side. This endpoint works with or without a game in progress. The new
 level applies to that side's next move. Response:
 `{"levels": {"white": 5, "black": 8}}`.
 
+### `POST /api/game/name` — set or clear a side's display name
+
+```json
+{"color": "white", "name": "Deep Purple"}
+```
+
+`color` is `"white"` or `"black"`. `name` is up to 40 characters,
+trimmed rather than rejected if longer. An empty `name` clears it back
+to showing just that side's type. This name is shown in the board
+viewer and stamped onto that side's `move_log` entries from then on
+(see `name` under `GET /api/game` below). Names are per side, not per
+game. As a result, this also covers a name for a game already in
+progress. For example, an API user joining a game they did not start
+can set a name here. The `white_name`/`black_name` fields on
+`POST /api/game` only apply when that game is created. Works with or
+without a game running. Response:
+`{"player_names": {"white": "Deep Purple", "black": null}}`.
+
 ### `GET /api/game` — current state
 
 This endpoint returns the board, the side to move, the game status, the
@@ -111,10 +134,11 @@ move.
   "board_ascii": "r n b q k b n r\n...",
   "board": [[{"color": "white", "type": "P", "code": "wP"}, null, ...], ...],
   "players": {"white": "api-user", "black": "engine"},
+  "player_names": {"white": "Deep Purple", "black": null},
   "engine_levels": {"white": 5, "black": 5},
   "fullmove_number": 1,
   "halfmove_clock": 0,
-  "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user"}]
+  "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "message": "Good luck!"}]
 }
 ```
 
@@ -122,6 +146,11 @@ move.
 `stalemate`, `draw_insufficient_material`, `draw_75_moves`,
 `draw_5fold_repetition`, `draw_claimable_50_moves`,
 `draw_claimable_threefold_repetition`, `resigned`.
+
+Each `move_log` entry's `name` is that side's display name at the time
+of the move, or `null` if none was set (see `POST /api/game/name`
+above). Its `message` is present only if that move carried a chat
+line (see `POST /api/game/move` below).
 
 If no game has started, this endpoint returns `404`.
 
@@ -133,7 +162,7 @@ The SSE stream pushes a new state the instant the game changes.
 ### `POST /api/game/move` — submit a move
 
 ```json
-{"move": "e2e4"}
+{"move": "e2e4", "message": "Good luck!"}
 ```
 
 This endpoint accepts UCI notation (`e2e4`, `e7e8q` for promotion) or
@@ -142,9 +171,17 @@ turn. The caller does not name the color, because only one side can
 move at a time. If it becomes GNU Chess's turn next, the server
 computes and applies its reply immediately.
 
+`message` (optional, up to 240 characters, trimmed rather than
+rejected if longer) attaches a short chat line to this move. There is
+no separate delivery step. The message is stamped onto this move's
+`move_log` entry, along with the mover's current display name. The
+opponent sees both the next time they read the game state — for
+example, the response to their own next move. A person watching the
+board viewer sees it there too, next to the move.
+
 ```json
-{"move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user"},
- "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine"},
+{"move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "message": "Good luck!"},
+ "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine", "name": "GNU Chess"},
  "state": {...}}
 ```
 
@@ -196,6 +233,19 @@ other. This form supports every combination the API supports:
 page lets that person click a piece. Then the person clicks a
 highlighted square to move there. If the move is a promotion, the page
 shows a small picker for the piece to promote to.
+
+**Names and chat.** A players bar above the board shows each side's
+display name, type, and — for an `"engine"` side — its difficulty
+level. Set a name with `POST /api/game/name`. The side to move is
+highlighted. Any move that carried a `message` (see
+`POST /api/game/move`) shows up in a chat panel below the board, next
+to that move. This page only displays chat — it has no way to send
+one, since only an API user can attach a message to a move.
+
+**Last-move arrow.** After a move, a semi-transparent arrow points
+from its start square to its end square, on top of the piece that
+moved. It updates on every new move, and clears when a new game
+starts.
 
 The page's own `/game/start`, `/game/move`, and `/game/legal-moves`
 routes back these two features. They call the same `ChessGame` object

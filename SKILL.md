@@ -35,10 +35,15 @@ Core facts to remember:
   not call this endpoint back-to-back. Between checks, spend a few
   seconds on something useful: think ahead about your reply to likely
   opponent moves, or tell the user the current position. Then check
-  again. See section 3.3.
-- **Always narrate your thinking in the chat.** After you see an
+  again. See section 4.3.
+- **Always narrate your thinking to the user.** After you see an
   opponent move, and before you submit your own move, say something.
-  Section 3.1 gives the exact points to do this at.
+  Section 4.1 gives the exact points to do this at. This is separate
+  from in-game chat (next bullet) — it is what you tell the person you
+  are talking to, in this conversation.
+- **You can set a display name, and attach a short chat message to a
+  move.** Both are optional, and both are visible to your opponent and
+  anyone watching the board viewer. See section 2.
 
 ## 1. Starting a new game
 
@@ -75,20 +80,68 @@ Content-Type: application/json
   first move immediately. The response holds this move in
   `engine_move`. Read it before you do anything else. If you are
   Black, this is the move you respond to.
+- `white_name`/`black_name` (each optional) set that side's display
+  name for this game. See section 2 for what a name does and how to
+  set or change one later, including for a game you did not start.
 - **Two engines watching each other is supported, for a user who wants
   to watch a game rather than play one.** Set both `white` and `black`
   to `"engine"`, optionally with different `white_level` and
   `black_level`. Neither side will ever call `POST /api/game/move`. Do
   not start this setup if the user, or you, want to play instead.
-  Nothing in section 3 applies to a game like this. The game plays
+  Nothing in section 4 applies to a game like this. The game plays
   itself out in the background at its own pace. Watch it with
-  `GET /api/game` polling (section 3.3) or the board viewer's event
+  `GET /api/game` polling (section 4.3) or the board viewer's event
   stream, the same as any other game.
 
 The response is `201` with `{"state": {...}, "engine_move": {...} | null}`.
 Keep `state`: `state.turn` names the side to move next.
 
-## 2. Joining a game already in progress
+## 2. Setting your name and sending chat messages
+
+Both are optional and cosmetic, with no effect on move legality or
+turn order. Skip this section if the user has not asked for either.
+
+**Display name.** Set one with:
+
+```
+POST /api/game/name
+Content-Type: application/json
+
+{"color": "white", "name": "Deep Purple"}
+```
+
+- `color` is `"white"` or `"black"` — whichever side you are playing.
+- `name` is up to 40 characters. Longer text is cut short rather than
+  rejected. Send an empty string to clear a name back to showing just
+  your type (`"api-user"`).
+- This works whether or not a game is running, and takes effect right
+  away. Use it to set your name before your first move in a game you
+  are joining (section 3). `white_name`/`black_name` on
+  `POST /api/game` (section 1) only sets a name when that game is
+  created.
+- Once set, your name is shown in the board viewer and stamped on
+  each of your move-log entries (see `name` in section 4.2). It stays
+  set for later games too, until changed again.
+
+**Chat messages.** Attach a short line to a move with the `message`
+field on `POST /api/game/move` (section 4.2):
+
+```json
+{"move": "e2e4", "message": "Good luck!"}
+```
+
+- `message` is up to 240 characters. Longer text is cut short. Leave
+  it out for a normal move with no chat attached.
+- There is no separate inbox. The API stamps your message onto that
+  move's entry in `move_log`. Your opponent sees it the next time
+  they read the game state — the response to their own next move, or
+  a plain `GET /api/game`. If your opponent is a person at the board
+  viewer, they see it there in a chat panel, next to the move.
+- To read a message from your opponent, check the latest `move_log`
+  entry that is theirs for a `message` field. This is the same place
+  you already look to see what move they made (section 4.1, step 3).
+
+## 3. Joining a game already in progress
 
 The API has no login or seat system, so "joining" means: check the
 current state, find the open side, and start submitting moves for it.
@@ -116,12 +169,12 @@ only the color name changes.
      joinable. Tell the user, and offer to start a fresh game instead.
 
 3. Read `state.status` and `state.game_over`. If the game already
-   ended, do not submit a move. Report the result instead (section 4)
+   ended, do not submit a move. Report the result instead (section 5)
    and offer a new game.
 
 4. Read `state.turn`. This is the color to move now, not necessarily
-   your color. If `state.turn` equals your color, go to section 3 and
-   play your move. If not, wait for your turn (section 3.3).
+   your color. If `state.turn` equals your color, go to section 4 and
+   play your move. If not, wait for your turn (section 4.3).
 
 A two-API-user game (`state.players` shows `"api-user"` for both
 colors) needs one extra check: the state alone does not say which
@@ -129,9 +182,9 @@ outside caller owns which color, since there is no login. Ask the user
 which color they want you to play, then submit moves only when
 `state.turn` matches that color.
 
-## 3. Playing the game
+## 4. Playing the game
 
-### 3.1 The move loop
+### 4.1 The move loop
 
 For each of your turns, repeat this loop:
 
@@ -148,27 +201,31 @@ For each of your turns, repeat this loop:
 3. Check for an opponent move since your last turn: a new
    `engine_move`, or a new `move_log` entry from your opponent. If you
    find one, tell the user what you think it aims to do, in plain
-   language. Do this every time, before you plan your own move.
+   language. Do this every time, before you plan your own move. Also
+   check that entry for a `message` field (section 2). If it has one,
+   treat it as a chat line from your opponent and react to it too.
 4. Choose a legal move. Before you submit it, tell the user the
-   theory behind it in the chat. Explain what it does for your
-   position, and why you picked it over the alternatives. Give this
-   explanation every time, not only when the move looks unusual.
+   theory behind it: explain what it does for your position, and why
+   you picked it over the alternatives. Give this explanation every
+   time, not only when the move looks unusual. Optionally, also give
+   the move a short `message` (section 2): a greeting, a comment on
+   the position, anything brief.
 5. Submit the move with curl:
    ```bash
    curl -X POST http://10.0.2.2:5003/api/game/move \
      -H 'Content-Type: application/json' \
-     -d '{"move": "e2e4"}'
+     -d '{"move": "e2e4", "message": "Good luck!"}'
    ```
-6. Repeat from step 1 until the game ends (section 4).
+6. Repeat from step 1 until the game ends (section 5).
 
 If the response to your move has a non-null `engine_move`, that is
 the engine's reply. Treat it the same as any opponent move: narrate
 it (step 3) at the start of your next loop, before you plan your
 reply. In a two-API-user or a `"web-user"`-opponent game, wait for the
-other side (section 3.3) instead, before your next loop. Narrate their
+other side (section 4.3) instead, before your next loop. Narrate their
 move (step 3) as soon as you see it in `move_log`.
 
-### 3.2 Move submission details
+### 4.2 Move submission details
 
 Legal moves (from step 1 above) have this form:
 
@@ -182,39 +239,43 @@ promotion), `san` (for example, `"e4"`, `"Nf3"`, `"O-O"`), `from`,
 `to`, and `promotion`.
 
 Submit a move. UCI and SAN both work. Prefer UCI, because it has only
-one meaning:
+one meaning. `message` (optional, section 2) attaches a chat line to
+the move:
 
 ```
 POST /api/game/move
 Content-Type: application/json
 
-{"move": "e2e4"}
+{"move": "e2e4", "message": "Good luck!"}
 ```
 
 Response:
 
 ```json
 {
-  "move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user"},
-  "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine"} ,
+  "move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "message": "Good luck!"},
+  "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine", "name": "GNU Chess"} ,
   "state": {...}
 }
 ```
 
-- `move` echoes back what you submitted.
+- `move` echoes back what you submitted, with `name` (your current
+  display name, or `null` if you have not set one — section 2) and
+  `message` (only present if you sent one) added.
 - `engine_move` is set (non-null) only when it becomes an `"engine"`
   side's turn immediately after your move. The API computes and
   applies the engine's reply in this same call. Read it: this is the
-  opponent's reply you narrate and respond to next (section 3.1, step 3).
+  opponent's reply you narrate and respond to next (section 4.1, step 3).
 - `state` is the full, current game state, after both moves above are
   applied. Always read `turn` and `status` from this object. Do not
-  assume their values.
+  assume their values. It also carries `player_names`, the current
+  `{"white": name_or_null, "black": name_or_null}` (section 2).
 - `400` means the move was illegal, malformed, or it was not an
   `"api-user"` or `"web-user"` side's turn. Read the `error` field and
   correct your next call: for example, fetch legal moves again, or
   check the turn again.
 
-### 3.3 Waiting for the other side
+### 4.3 Waiting for the other side
 
 If it is not your turn and the other side is not `"engine"` (an
 `"api-user"` or a `"web-user"` opponent), do not spin in a tight
@@ -236,7 +297,7 @@ game changes. It is JSON meant for the viewer page, and the API docs
 do not list it as a control endpoint, but you can read it while you
 wait.
 
-### 3.4 Watching without playing
+### 4.4 Watching without playing
 
 `GET http://10.0.2.2:5004/` is an HTML board. It updates live through
 Server-Sent Events, with no manual refresh, for a user who wants to
@@ -245,7 +306,7 @@ watch. A person can also use this page to start a game, or to play a
 through the browser, not you. When you act on the game, always use the
 REST API (port 5003) as described in this skill.
 
-## 4. Recognizing the end of a game
+## 5. Recognizing the end of a game
 
 After every move, or every poll, check the `state` object's
 `game_over` and `status` fields. Do not infer the end of the game from

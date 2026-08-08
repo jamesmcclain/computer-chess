@@ -16,7 +16,9 @@ API_DOC = {
             "body": {"white": "api-user|web-user|engine", "black": "api-user|web-user|engine",
                      "level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
                      "white_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
-                     "black_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional"},
+                     "black_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
+                     "white_name": "optional, up to 40 chars",
+                     "black_name": "optional, up to 40 chars"},
             "description": "Start a new game, replacing any game already "
                             "in progress. Both sides can be 'engine'; the "
                             "two engines then play each other, paced one "
@@ -27,23 +29,37 @@ API_DOC = {
                             "that side, useful for an engine-vs-engine "
                             "game where the two sides differ. Any level "
                             "left unset keeps whatever was last set; see "
-                            "GET /api/engine-levels. If white is 'engine' "
+                            "GET /api/engine-levels. 'white_name'/"
+                            "'black_name' set that side's display name, "
+                            "shown in the board viewer and stamped on its "
+                            "move-log entries; leave unset to keep "
+                            "whatever name was last set for that side (see "
+                            "POST /api/game/name). If white is 'engine' "
                             "and black is not, gnuchess's opening move is "
                             "played immediately and returned as "
                             "'engine_move'.",
         },
         "GET /api/game": "Current game state (board, whose turn it is, "
-                          "status, move log, engine levels, ...). This is "
-                          "also how to check whose turn it is — see the "
-                          "'turn' field.",
+                          "status, move log, engine levels, player names, "
+                          "...). This is also how to check whose turn it "
+                          "is — see the 'turn' field.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
                                       "Optional query param: from=e2",
         "POST /api/game/move": {
-            "body": {"move": "e2e4 (UCI) or e4 (SAN)"},
+            "body": {"move": "e2e4 (UCI) or e4 (SAN)",
+                     "message": "optional, up to 240 chars"},
             "description": "Submit a move for whichever side is currently "
-                            "to move. If it becomes the engine's turn "
-                            "afterward, gnuchess replies immediately and "
-                            "its move is returned as 'engine_move'.",
+                            "to move. 'message' (optional) is a short chat "
+                            "line attached to this move — it is stamped, "
+                            "along with your current display name (see "
+                            "POST /api/game/name), onto this move's entry "
+                            "in 'move_log'. There is no separate inbox: "
+                            "your opponent sees it the next time they read "
+                            "the game state, e.g. in the response to their "
+                            "own next move, or a plain GET /api/game. If "
+                            "it becomes the engine's turn afterward, "
+                            "gnuchess replies immediately and its move is "
+                            "returned as 'engine_move'.",
         },
         "POST /api/game/resign": {
             "body": {"player": "white|black"},
@@ -63,6 +79,19 @@ API_DOC = {
                             "whether or not a game is running, and takes "
                             "effect on that side's next move. Returns the "
                             "updated {'white': N, 'black': N}.",
+        },
+        "POST /api/game/name": {
+            "body": {"color": "white|black", "name": "up to 40 chars"},
+            "description": "Set (or, with an empty 'name', clear) one "
+                            "side's display name. Shown in the board "
+                            "viewer and stamped on that side's move-log "
+                            "entries from then on. Useful for an API user "
+                            "joining a game they did not start, since "
+                            "'white_name'/'black_name' on POST /api/game "
+                            "only set a name when that game is created. "
+                            "Works whether or not a game is running. "
+                            "Returns the updated "
+                            "{'white': name_or_null, 'black': name_or_null}.",
         },
     },
     "viewer": "A board viewer is served separately on port 5004. It shows "
@@ -98,9 +127,12 @@ def create_api_app(game):
         level = body.get("level")
         white_level = body.get("white_level")
         black_level = body.get("black_level")
+        white_name = body.get("white_name")
+        black_name = body.get("black_name")
         try:
             state, engine_move = game.new_game(
-                white, black, level=level, white_level=white_level, black_level=black_level
+                white, black, level=level, white_level=white_level, black_level=black_level,
+                white_name=white_name, black_name=black_name,
             )
         except GameError as e:
             return error(str(e))
@@ -125,10 +157,11 @@ def create_api_app(game):
     def post_move():
         body = request.get_json(silent=True) or {}
         move_str = body.get("move")
+        message = body.get("message")
         if not move_str:
             return error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
         try:
-            player_move, engine_move = game.make_move(move_str)
+            player_move, engine_move = game.make_move(move_str, message=message)
         except GameError as e:
             return error(str(e))
         return jsonify(move=player_move, engine_move=engine_move, state=game.state())
@@ -159,5 +192,16 @@ def create_api_app(game):
         except GameError as e:
             return error(str(e))
         return jsonify(levels=new_levels)
+
+    @app.post("/api/game/name")
+    def post_name():
+        body = request.get_json(silent=True) or {}
+        color = body.get("color")
+        name = body.get("name")
+        try:
+            new_names = game.set_name(color, name)
+        except GameError as e:
+            return error(str(e))
+        return jsonify(player_names=new_names)
 
     return app

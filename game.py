@@ -67,6 +67,12 @@ PLAYER_TYPES = ("api-user", "web-user", "engine")
 # see it move.
 AUTOPLAY_PAUSE_SECONDS = 1.0
 
+# Display name and chat-message length caps. Both are trimmed rather than
+# rejected outright — a display name or a short chat line is a cosmetic
+# add-on to a move, not something worth failing the move over.
+NAME_MAX_LEN = 40
+MESSAGE_MAX_LEN = 240
+
 
 def describe_levels():
     """List of {"level", "depth", "max_time_seconds"} for every valid
@@ -118,12 +124,19 @@ class ChessGame:
         self.started = False
         self.result_reason = None    # set to "resigned" on resignation
         self.resigned_by = None      # "white" | "black"
-        self.move_log = []           # [{"ply","color","uci","san","by"}, ...]
+        self.move_log = []           # [{"ply","color","uci","san","by","name","message"}, ...]
         self.created_at = None
         # Difficulty is per side, not per game, so an engine-vs-engine game
         # can pit two different strengths against each other. For a game
         # with only one "engine" side, only that side's entry is ever read.
         self.engine_levels = {"white": DEFAULT_LEVEL, "black": DEFAULT_LEVEL}
+        # Display name is also per side rather than per game — like
+        # engine_levels, it's a sticky preference that carries over into
+        # the next game unless overridden (see new_game()), since there's
+        # no login for an API user to re-announce themselves with every
+        # time. None means "no name set"; the UI then just shows the
+        # side's type ("api-user", "engine", ...) instead.
+        self.player_names = {"white": None, "black": None}
 
     # ---- engine lifecycle -------------------------------------------------
 
@@ -146,7 +159,8 @@ class ChessGame:
 
     # ---- game lifecycle -----------------------------------------------------
 
-    def new_game(self, white, black, level=None, white_level=None, black_level=None):
+    def new_game(self, white, black, level=None, white_level=None, black_level=None,
+                 white_name=None, black_name=None):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
         ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
         (optional, 1-10) sets the difficulty for both sides at once — a
@@ -155,10 +169,13 @@ class ChessGame:
         specifically, and take priority over `level` for that side; use
         them to give the two engines in an engine-vs-engine game different
         strengths. Any level left unset keeps whatever was last set (or
-        the default). Returns (state_dict, engine_move_or_None) —
-        engine_move is set if white is 'engine', since it then moves
-        immediately. If both sides are 'engine', the rest of the game
-        plays out in the background — see _start_autoplay."""
+        the default). `white_name`/`black_name` (each optional) likewise
+        set that side's display name for this game, and otherwise keep
+        whatever name was last set (see set_name()). Returns (state_dict,
+        engine_move_or_None) — engine_move is set if white is 'engine',
+        since it then moves immediately. If both sides are 'engine', the
+        rest of the game plays out in the background — see
+        _start_autoplay."""
         white = (white or "").strip().lower()
         black = (black or "").strip().lower()
         if white not in PLAYER_TYPES or black not in PLAYER_TYPES:
@@ -169,6 +186,10 @@ class ChessGame:
             white_level = self._validate_level(white_level)
         if black_level is not None:
             black_level = self._validate_level(black_level)
+        if white_name is not None:
+            white_name = self._clean_text(white_name, NAME_MAX_LEN)
+        if black_name is not None:
+            black_name = self._clean_text(black_name, NAME_MAX_LEN)
 
         with self._lock:
             self.board = chess.Board()
@@ -188,6 +209,10 @@ class ChessGame:
                 self.engine_levels["white"] = white_level
             if black_level is not None:
                 self.engine_levels["black"] = black_level
+            if white_name is not None:
+                self.player_names["white"] = white_name
+            if black_name is not None:
+                self.player_names["black"] = black_name
 
             both_engines = white == "engine" and black == "engine"
             engine_move = None
@@ -248,6 +273,19 @@ class ChessGame:
         if not (LEVEL_MIN <= level <= LEVEL_MAX):
             raise GameError(f"'level' must be between {LEVEL_MIN} and {LEVEL_MAX}")
         return level
+
+    def _clean_text(self, text, max_len):
+        """Strip and cap free-form text (a display name or a chat message)
+        to `max_len` characters. Returns None for empty/whitespace-only
+        input, so callers can use that to mean 'no name' or 'no message'
+        rather than raising an error over what is, at worst, a cosmetic
+        problem — a move should never fail just because its chat text was
+        too long or blank."""
+        if text is None:
+            return None
+        text = " ".join(str(text).split())  # collapse all whitespace, incl. newlines
+        text = text[:max_len].strip()
+        return text or None
 
     def _current_player_type(self):
         return self.white_type if self.board.turn == chess.WHITE else self.black_type
@@ -344,7 +382,12 @@ class ChessGame:
         san = self.board.san(move)
         uci = move.uci()
         self.board.push(move)
-        entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san, "by": "engine"}
+        # A custom name (set via set_name()) wins even for an 'engine' side;
+        # otherwise fall back to a plain "GNU Chess" label so the viewer and
+        # any chat log always have something readable to show.
+        name = self.player_names.get(color) or "GNU Chess"
+        entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san,
+                  "by": "engine", "name": name}
         self.move_log.append(entry)
         return entry
 
@@ -373,6 +416,25 @@ class ChessGame:
                 self.engine_levels[color] = level
             self._bump_version_locked()
             return dict(self.engine_levels)
+
+    def set_name(self, color, name):
+        """Set (or clear) a side's display name. `color` is 'white' or
+        'black'. `name` is shown in the board viewer and stamped onto
+        that side's move-log entries from then on; pass None (or an
+        empty/whitespace-only string) to clear it back to showing just
+        the side's type. Like set_level(), this is a sticky per-side
+        setting: it carries over into the next game unless overridden
+        there (see new_game()'s white_name/black_name), and can be
+        called whether or not a game is currently running — useful for
+        an API user who is joining a game they did not start. Returns
+        the updated {"white": name_or_None, "black": name_or_None}."""
+        if color not in ("white", "black"):
+            raise GameError("'color' must be 'white' or 'black'")
+        name = self._clean_text(name, NAME_MAX_LEN)
+        with self._lock:
+            self.player_names[color] = name
+            self._bump_version_locked()
+            return dict(self.player_names)
 
     def wait_for_change(self, since_version, timeout=25):
         """Block until the game state has changed since `since_version`
@@ -405,6 +467,7 @@ class ChessGame:
                 "board_ascii": str(board),
                 "board": self._board_grid(),
                 "players": {"white": self.white_type, "black": self.black_type},
+                "player_names": dict(self.player_names),
                 "engine_levels": dict(self.engine_levels),
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
@@ -432,10 +495,15 @@ class ChessGame:
                 })
             return moves
 
-    def make_move(self, move_str):
+    def make_move(self, move_str, message=None):
         """Submit a move for whichever side is currently to move — works
         the same whether that side is 'api-user' or 'web-user'; only
-        'engine' turns are rejected here (gnuchess moves itself). Returns
+        'engine' turns are rejected here (gnuchess moves itself). `message`
+        (optional) is a short chat line attached to this move — it and
+        this side's current display name (see set_name()) are stamped
+        onto the move-log entry, so anyone who reads the game state after
+        this point (in particular, the opponent's own next call) sees
+        them; there is no separate delivery step. Returns
         (player_move_entry, engine_entry_or_None) — the engine entry is
         set if, after this move, it becomes an 'engine' side's turn and
         gnuchess replies immediately."""
@@ -453,7 +521,11 @@ class ChessGame:
             san = self.board.san(move)
             uci = move.uci()
             self.board.push(move)
-            player_entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san, "by": mover_type}
+            player_entry = {"ply": len(self.move_log) + 1, "color": color, "uci": uci, "san": san,
+                              "by": mover_type, "name": self.player_names.get(color)}
+            clean_message = self._clean_text(message, MESSAGE_MAX_LEN)
+            if clean_message is not None:
+                player_entry["message"] = clean_message
             self.move_log.append(player_entry)
 
             engine_entry = None

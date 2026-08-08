@@ -252,6 +252,58 @@ PAGE = """<!doctype html>
     to   { opacity: 1; transform: scale(1); }
   }
   #meta { margin-top: 1rem; font-size: 0.85rem; color: #888; text-align: center; max-width: 520px; line-height: 1.6; }
+
+  /* ---- players bar -------------------------------------------------------
+     A compact "White vs Black" header above the board, showing each side's
+     display name (if set — see set_name()), type, and engine level. The
+     side currently on the move gets a highlighted pill so it's obvious at
+     a glance whose turn it is, without having to read the status line. */
+  #players-bar {
+    display: none; align-items: center; justify-content: center; gap: 0.6rem;
+    margin-bottom: 0.75rem; font-size: 0.85rem;
+  }
+  #players-bar .side {
+    display: flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.7rem;
+    border-radius: 999px; background: var(--panel-bg); border: 1px solid var(--panel-border);
+    color: #bbb; transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  }
+  #players-bar .side .dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; flex-shrink: 0; }
+  #players-bar .side.white .dot { background: #f0d9b5; }
+  #players-bar .side.black .dot { background: #b58863; }
+  #players-bar .side.to-move { background: var(--accent); border-color: var(--accent); color: #1a1a1a; font-weight: 600; }
+  #players-bar .vs { color: #666; font-size: 0.75rem; }
+
+  /* ---- last-move arrow ----------------------------------------------------
+     A semi-transparent arrow drawn from a moved piece's old square to its
+     new one, so the move that just happened is obvious even to someone
+     glancing at the board mid-game rather than watching it live. Uses an
+     SVG with viewBox="0 0 8 8" (one unit per square) laid over the board,
+     so it scales with the board automatically — no JS resize math needed,
+     unlike the pixel-based board sizing above. */
+  #move-arrow { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+  #move-arrow-line { fill: none; stroke: var(--accent); stroke-width: 0.14; stroke-linecap: round; opacity: 0; transition: opacity 0.15s ease; }
+  #move-arrow-line.shown { opacity: 0.85; }
+  #move-arrow-head { fill: var(--accent); opacity: 0; transition: opacity 0.15s ease; }
+  #move-arrow-head.shown { opacity: 0.85; }
+
+  /* ---- chat -------------------------------------------------------------
+     Short messages an API user can attach to their moves (see
+     POST /api/game/move's 'message' field) show up here, newest at the
+     bottom. Purely a read-only log — this page has no way to send one,
+     since only API users can attach chat to a move. */
+  #chat-panel {
+    display: none; flex-direction: column; width: 100%; max-width: 420px;
+    margin-top: 1rem; background: var(--panel-bg); border: 1px solid var(--panel-border);
+    border-radius: 10px; overflow: hidden;
+  }
+  #chat-panel .chat-title {
+    padding: 0.5rem 0.8rem; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.02em;
+    text-transform: uppercase; color: #aaa; border-bottom: 1px solid var(--panel-border);
+  }
+  #chat-log { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.6rem 0.8rem; max-height: 10rem; overflow-y: auto; }
+  #chat-log .chat-line { font-size: 0.8rem; line-height: 1.4; color: #ddd; }
+  #chat-log .chat-line .chat-name { color: var(--accent); font-weight: 600; }
+  #chat-log .chat-line .chat-move { color: #777; font-size: 0.72rem; }
 </style>
 </head>
 <body>
@@ -309,8 +361,18 @@ PAGE = """<!doctype html>
     </div>
   </div>
 
+  <div id="players-bar">
+    <div class="side white" id="side-white"><span class="dot"></span><span class="side-label"></span></div>
+    <span class="vs">vs</span>
+    <div class="side black" id="side-black"><span class="dot"></span><span class="side-label"></span></div>
+  </div>
+
   <div id="board-wrap"><div id="board"></div><div id="promo-picker"></div></div>
   <div id="meta"></div>
+  <div id="chat-panel">
+    <div class="chat-title">Chat</div>
+    <div id="chat-log"></div>
+  </div>
 <script>
 const UNICODE = {
   wP: "\\u2659", wN: "\\u2658", wB: "\\u2657", wR: "\\u2656", wQ: "\\u2655", wK: "\\u2654",
@@ -332,6 +394,11 @@ const metaEl = document.getElementById("meta");
 const connEl = document.getElementById("conn");
 const startPanelEl = document.getElementById("start-panel");
 const promoPickerEl = document.getElementById("promo-picker");
+const playersBarEl = document.getElementById("players-bar");
+const sideWhiteEl = document.getElementById("side-white");
+const sideBlackEl = document.getElementById("side-black");
+const chatPanelEl = document.getElementById("chat-panel");
+const chatLogEl = document.getElementById("chat-log");
 
 // cellEls[r][c] = the .sq div. lastCodes[r][c] = piece code last painted
 // there ("wN", etc.) or null. Built once; reused across every update so
@@ -346,6 +413,19 @@ let latestState = null; // most recent state from render(), used by click-to-mov
 // offered for the same destination square).
 let selectedSquare = null;
 let legalTargets = {};
+
+// Last-move arrow: line + arrowhead elements (built once in buildBoard(),
+// since it clears #board's contents), and how many move_log entries were
+// on the board the last time the arrow was drawn — a length change means
+// there's a new last move to point at (see updateMoveArrow()).
+let moveArrowLineEl = null;
+let moveArrowHeadEl = null;
+let lastArrowLogLength = 0;
+
+// Chat: how many move_log entries have already been rendered into the
+// chat panel, so re-renders only append new messages instead of rebuilding
+// the whole log (and losing scroll position) every time.
+let lastChatLogLength = 0;
 
 // ---------------------------------------------------------------------
 // Style state: persisted in localStorage so it's remembered per-browser
@@ -489,6 +569,8 @@ function repaintAllPieces() {
 // ---------------------------------------------------------------------
 // Board rendering
 // ---------------------------------------------------------------------
+const SVG_NS = "http://www.w3.org/2000/svg";
+
 function buildBoard() {
   boardEl.innerHTML = "";
   cellEls = [];
@@ -509,6 +591,77 @@ function buildBoard() {
     cellEls.push(rowEls);
     lastCodes.push(rowCodes);
   }
+
+  // Last-move arrow overlay: one unit per square (viewBox "0 0 8 8"), so
+  // it scales with the board with no JS resize math of its own — see the
+  // #move-arrow CSS comment. Rebuilt here since boardEl.innerHTML was
+  // just cleared above.
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("id", "move-arrow");
+  svg.setAttribute("viewBox", "0 0 8 8");
+  moveArrowLineEl = document.createElementNS(SVG_NS, "line");
+  moveArrowLineEl.setAttribute("id", "move-arrow-line");
+  moveArrowHeadEl = document.createElementNS(SVG_NS, "polygon");
+  moveArrowHeadEl.setAttribute("id", "move-arrow-head");
+  svg.appendChild(moveArrowLineEl);
+  svg.appendChild(moveArrowHeadEl);
+  boardEl.appendChild(svg);
+  lastArrowLogLength = 0;
+}
+
+// ---------------------------------------------------------------------
+// Last-move arrow: draws a semi-transparent arrow from the previous move's
+// source square to its destination, so the move that just happened reads
+// clearly at a glance (not just from the piece having "popped in" at its
+// new square). Only redraws when move_log actually grew, so it doesn't
+// re-animate on unrelated state pushes (e.g. someone else's chat message).
+// ---------------------------------------------------------------------
+function updateMoveArrow(state) {
+  const log = (state && state.move_log) || [];
+  if (!moveArrowLineEl) return;
+  if (!state || !state.started || log.length === 0) {
+    moveArrowLineEl.classList.remove("shown");
+    moveArrowHeadEl.classList.remove("shown");
+    lastArrowLogLength = 0;
+    return;
+  }
+  if (log.length === lastArrowLogLength) return;
+  lastArrowLogLength = log.length;
+
+  const last = log[log.length - 1];
+  if (!last.uci || last.uci.length < 4) {
+    moveArrowLineEl.classList.remove("shown");
+    moveArrowHeadEl.classList.remove("shown");
+    return;
+  }
+  const [fr, fc] = squareToRC(last.uci.slice(0, 2));
+  const [tr, tc] = squareToRC(last.uci.slice(2, 4));
+  drawMoveArrow(fc + 0.5, fr + 0.5, tc + 0.5, tr + 0.5);
+}
+
+function drawMoveArrow(x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const dist = Math.hypot(dx, dy) || 1;
+  const ux = dx / dist, uy = dy / dist;
+
+  // Inset both ends a bit so the line starts clear of the origin piece
+  // and stops short of the arrowhead rather than running through it.
+  const startInset = 0.15, endInset = 0.42;
+  moveArrowLineEl.setAttribute("x1", x1 + ux * startInset);
+  moveArrowLineEl.setAttribute("y1", y1 + uy * startInset);
+  moveArrowLineEl.setAttribute("x2", x2 - ux * endInset);
+  moveArrowLineEl.setAttribute("y2", y2 - uy * endInset);
+
+  const headLen = 0.32, headWidth = 0.22;
+  const tipX = x2 - ux * 0.08, tipY = y2 - uy * 0.08;
+  const baseX = tipX - ux * headLen, baseY = tipY - uy * headLen;
+  const px = -uy, py = ux; // perpendicular unit vector, for the arrowhead's base corners
+  const p1x = baseX + px * headWidth, p1y = baseY + py * headWidth;
+  const p2x = baseX - px * headWidth, p2y = baseY - py * headWidth;
+  moveArrowHeadEl.setAttribute("points", `${tipX},${tipY} ${p1x},${p1y} ${p2x},${p2y}`);
+
+  moveArrowLineEl.classList.add("shown");
+  moveArrowHeadEl.classList.add("shown");
 }
 
 // ---------------------------------------------------------------------
@@ -681,7 +834,13 @@ function render(state) {
     boardEl.innerHTML = "";
     cellEls = null;
     lastCodes = null;
+    moveArrowLineEl = null;
+    moveArrowHeadEl = null;
     boardWrapEl.style.display = "none";
+    playersBarEl.style.display = "none";
+    chatPanelEl.style.display = "none";
+    chatLogEl.innerHTML = "";
+    lastChatLogLength = 0;
     statusEl.className = "";
     statusEl.textContent = "No game in progress. Start one below.";
     metaEl.textContent = "";
@@ -702,6 +861,9 @@ function render(state) {
     }
   }
   updateInteractivity(state);
+  updateMoveArrow(state);
+  updatePlayersBar(state);
+  updateChatPanel(state);
 
   let text = (state.turn === "white" ? "White" : "Black") + " to move";
   statusEl.className = "";
@@ -717,14 +879,72 @@ function render(state) {
   }
   statusEl.textContent = text;
 
-  const sideLabel = (color) => {
-    const type = state.players[color];
-    if (type !== "engine" || !state.engine_levels) return type;
-    return type + " (level " + state.engine_levels[color] + ")";
-  };
   metaEl.textContent =
-    "white: " + sideLabel("white") + "  |  black: " + sideLabel("black") +
+    "white: " + sideLabel(state, "white") + "  |  black: " + sideLabel(state, "black") +
     "  |  move " + state.fullmove_number;
+}
+
+// Text form of a side's identity, shared by the meta line and the players
+// bar: its display name if one is set (see set_name()), its type, and —
+// for an "engine" side — its difficulty level.
+function sideLabel(state, color) {
+  const type = state.players[color];
+  const name = state.player_names && state.player_names[color];
+  let typeLabel = type;
+  if (type === "engine" && state.engine_levels) {
+    typeLabel = type + " (level " + state.engine_levels[color] + ")";
+  }
+  return name ? name + " \\u2014 " + typeLabel : typeLabel;
+}
+
+function updatePlayersBar(state) {
+  playersBarEl.style.display = "flex";
+  sideWhiteEl.querySelector(".side-label").textContent = sideLabel(state, "white");
+  sideBlackEl.querySelector(".side-label").textContent = sideLabel(state, "black");
+  const toMove = !state.game_over ? state.turn : null;
+  sideWhiteEl.classList.toggle("to-move", toMove === "white");
+  sideBlackEl.classList.toggle("to-move", toMove === "black");
+}
+
+// ---------------------------------------------------------------------
+// Chat: short messages an API user attached to their moves (the
+// 'message' field on POST /api/game/move) are stamped onto that move's
+// move_log entry server-side — there's no separate chat feed to poll,
+// this just renders whichever entries carry one. Appends only the
+// entries not yet shown, so it doesn't fight the person's scroll
+// position on every SSE push.
+// ---------------------------------------------------------------------
+function updateChatPanel(state) {
+  const log = state.move_log || [];
+  if (log.length < lastChatLogLength) {
+    // A new game started with a shorter log than we last saw — start over.
+    chatLogEl.innerHTML = "";
+    lastChatLogLength = 0;
+  }
+  const newEntries = log.slice(lastChatLogLength);
+  lastChatLogLength = log.length;
+
+  let added = false;
+  for (const entry of newEntries) {
+    if (!entry.message) continue;
+    added = true;
+    const line = document.createElement("div");
+    line.className = "chat-line";
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "chat-name";
+    nameSpan.textContent = (entry.name || entry.by) + ": ";
+    const moveSpan = document.createElement("span");
+    moveSpan.className = "chat-move";
+    moveSpan.textContent = " (" + entry.san + ")";
+    line.appendChild(nameSpan);
+    line.appendChild(document.createTextNode(entry.message));
+    line.appendChild(moveSpan);
+    chatLogEl.appendChild(line);
+  }
+  if (added) {
+    chatPanelEl.style.display = "flex";
+    chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  }
 }
 
 function setConn(live) {
@@ -947,10 +1167,11 @@ def create_viewer_app(game):
     def game_move():
         body = request.get_json(silent=True) or {}
         move_str = body.get("move")
+        message = body.get("message")
         if not move_str:
             return _error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
         try:
-            player_move, engine_move = game.make_move(move_str)
+            player_move, engine_move = game.make_move(move_str, message=message)
         except GameError as e:
             return _error(str(e))
         return jsonify(move=player_move, engine_move=engine_move, state=game.state())
