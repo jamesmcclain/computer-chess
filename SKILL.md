@@ -227,13 +227,13 @@ line goes out with a move:
   `strategic_reasoning` instead (below).
 - `chat` can be up to 240 characters. Longer text is cut short.
 - There is no separate inbox. The API stamps your chat onto that
-  move's entry in `move_log`. Your opponent sees it the next time
-  they read the game state: in the response to their own next move,
-  or in a plain `GET /api/game` call. A person at the board viewer
-  sees it in a chat panel, next to the move.
-- To read a chat line from your opponent, check their latest
-  `move_log` entry for a `chat` field. This is the same place you
-  check to see what move they made (section 4.1, step 3).
+  move's entry, returned as `state.last_move`. Your opponent sees it
+  the next time they read the game state: in the response to their
+  own next move, or in a plain `GET /api/game` call. A person at the
+  board viewer sees it in a chat panel, next to the move.
+- To read a chat line from your opponent, check `state.last_move` for
+  a `chat` field. This is the same place you check to see what move
+  they made (section 4.1, step 3).
 - For a line not tied to a move — a greeting, or "gg" at the end —
   attach it to a move you submit anyway. Use your first move, or your
   last move before you resign. You cannot send chat without a move.
@@ -325,7 +325,7 @@ Repeat this loop for each of your turns:
    curl http://10.0.2.2:5003/api/game
    ```
 3. Check for an opponent move since your last turn: a new
-   `engine_move`, or a new `move_log` entry from your opponent. If you
+   `engine_move`, or a `state.last_move` from your opponent. If you
    find one, tell the user what you think it does, in plain language,
    before you plan your own move. Also check that entry for a `chat`
    field (section 2) and react to it if present.
@@ -352,7 +352,7 @@ it like any opponent move: narrate it (step 3) at the start of your
 next loop, before you plan your reply. In a two-API-user or
 `"web-user"`-opponent game, wait for the other side instead (section
 4.3), then narrate their move (step 3) as soon as you see it in
-`move_log`.
+`state.last_move`.
 
 ### 4.2 Move submission details
 
@@ -398,10 +398,17 @@ Response:
   side's turn right after your move. The API computes and applies the
   engine's reply in this same call. This is the opponent's reply —
   narrate and respond to it next (section 4.1, step 3).
-- `state` is the full game state after both moves apply. Always read
+- `state` is the game state after both moves apply. Always read
   `turn` and `status` from it. Do not assume their values. It also
   carries `player_names`: `{"white": name_or_null, "black": name_or_null}`
-  (section 2).
+  (section 2), and `last_move`, the single most-recent move-log entry
+  (or `null` before any move) — use it to see your opponent's last
+  move and any `chat` on it (section 2, section 4.1 step 3). `state`
+  here, on `GET /api/game`, and on `GET /api/game/wait` deliberately
+  excludes the full move-by-move history, so its size stays constant
+  no matter how long the game runs — safe to fetch every turn in the
+  loop (section 4.1). The board viewer is the one place the full
+  history is exposed.
 - `400` means the move was illegal or malformed, or it was not an
   `"api-user"`/`"api-trainee"`/`"web-user"` turn. Read the `error`
   field, then correct your next call — for example, fetch legal moves

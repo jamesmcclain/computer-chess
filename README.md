@@ -252,7 +252,7 @@ move.
   },
   "fullmove_number": 1,
   "halfmove_clock": 0,
-  "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"}]
+  "last_move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"}
 }
 ```
 
@@ -280,11 +280,19 @@ There is no `eval` field in this JSON API response — the eval bar (see
 `GET /api/eval-qualities` and `POST /api/game/eval-quality` above) is a
 board-viewer-only feature for spectators.
 
-Each `move_log` entry's `name` is that side's display name at the time
-of the move, or `null` if none was set (see `POST /api/game/name`
-above). Its `chat` is present only if that move carried a chat line
-(see `POST /api/game/move` below). There is no standalone chat
-channel — every chat line belongs to a move.
+`last_move` is the most recent entry from the game's internal move
+log, or `null` before any move has been made. Its `name` is that
+side's display name at the time of the move, or `null` if none was
+set (see `POST /api/game/name` above). Its `chat` is present only if
+that move carried a chat line (see `POST /api/game/move` below).
+There is no standalone chat channel — every chat line belongs to a
+move. This endpoint, `POST /api/game/move`, `POST
+/api/game/phone-a-friend`, and `GET /api/game/wait` all return only
+this one entry, not the full move log, so their response size stays
+constant no matter how long the game runs — safe to call once per
+move in a loop. The board viewer (port 5004) is the one place the
+full move log is exposed, since it renders the whole game's history
+and chat.
 
 If no game has started, this endpoint returns `404`.
 
