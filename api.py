@@ -8,6 +8,7 @@ from flask import Flask, Response, jsonify, request
 
 from game import (
     DEFAULT_FRIEND_LIMITS,
+    ENGINE_NAMES,
     FRIEND_LEVELS,
     FRIEND_LIMIT_MAX,
     FRIEND_LIMIT_MIN,
@@ -20,20 +21,26 @@ from game import (
 )
 
 API_DOC = {
-    "description": "GNU Chess REST API. One game at a time; starting a new "
-                    "game replaces any game already in progress.",
+    "description": "computer-chess REST API. One game at a time; starting a "
+                    "new game replaces any game already in progress. An "
+                    "'engine' side can be either GNU Chess or Stockfish "
+                    f"(see 'engine' below) — {', '.join(ENGINE_NAMES)} — "
+                    "both equally supported everywhere an 'engine' side is.",
     "endpoints": {
         "POST /api/game": {
             "body": {"white": "api-user|web-user|engine", "black": "api-user|web-user|engine",
                      "level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
                      "white_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
                      "black_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
+                     "engine": f"one of: {', '.join(ENGINE_NAMES)}, optional",
+                     "white_engine": f"one of: {', '.join(ENGINE_NAMES)}, optional",
+                     "black_engine": f"one of: {', '.join(ENGINE_NAMES)}, optional",
                      "white_name": "optional, up to 40 chars",
                      "black_name": "optional, up to 40 chars",
                      "friend_level5_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
-                                             f"default {DEFAULT_FRIEND_LIMITS[5]}",
+                                             f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]]}",
                      "friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
-                                              f"default {DEFAULT_FRIEND_LIMITS[10]}"},
+                                              f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]}"},
             "description": "Start a new game, replacing any game already "
                             "in progress. Both sides can be 'engine'; the "
                             "two engines then play each other, paced one "
@@ -42,8 +49,13 @@ API_DOC = {
                             "once; 'white_level'/'black_level' set one "
                             "side's difficulty and win over 'level' for "
                             "that side, useful for an engine-vs-engine "
-                            "game where the two sides differ. Any level "
-                            "left unset keeps whatever was last set; see "
+                            "game where the two sides differ. 'engine' "
+                            "picks which engine plays both 'engine' sides "
+                            "at once; 'white_engine'/'black_engine' pick "
+                            "one side's engine and win over 'engine' for "
+                            "that side — use them to pit GNU Chess against "
+                            "Stockfish. Any level or engine left unset "
+                            "keeps whatever was last set; see "
                             "GET /api/engine-levels. 'white_name'/"
                             "'black_name' set that side's display name, "
                             "shown in the board viewer and stamped on its "
@@ -53,21 +65,21 @@ API_DOC = {
                             "'friend_level10_limit' set this game's 'phone "
                             "a friend' budget (see "
                             "POST /api/game/phone-a-friend) — how many "
-                            "level-5 and level-10 engine hints an "
+                            f"level-{FRIEND_LEVELS[0]} and level-{FRIEND_LEVELS[1]} engine hints an "
                             "'api-user' side may ask for over the course "
                             "of this game. Unlike the level/name settings "
                             "above, these are not sticky: every new game "
                             "gets the defaults shown above unless "
                             "overridden here, and usage always resets to "
                             "zero. If white is 'engine' and black is not, "
-                            "gnuchess's opening move is played immediately "
-                            "and returned as 'engine_move'.",
+                            "that engine's opening move is played "
+                            "immediately and returned as 'engine_move'.",
         },
         "GET /api/game": "Current game state (board, whose turn it is, "
                           "status, move log — including any chat attached "
-                          "to a move — engine levels, player names, "
-                          "...). This is also how to check whose turn it "
-                          "is — see the 'turn' field.",
+                          "to a move — engine levels and engine choices, "
+                          "player names, ...). This is also how to check "
+                          "whose turn it is — see the 'turn' field.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
                                       "Optional query param: from=e2",
         "POST /api/game/move": {
@@ -91,9 +103,9 @@ API_DOC = {
                             "endpoint while the game is in progress; it "
                             "is kept server-side only until the game ends "
                             "(see GET /api/game/transcript). If it "
-                            "becomes the engine's turn afterward, gnuchess "
-                            "replies immediately and its move is returned "
-                            "as 'engine_move'.",
+                            "becomes the engine's turn afterward, that "
+                            "engine replies immediately and its move is "
+                            "returned as 'engine_move'.",
         },
         "GET /api/game/wait": {
             "query": {"color": "white|black",
@@ -111,29 +123,33 @@ API_DOC = {
                             "GET /api/game in a loop.",
         },
         "POST /api/game/phone-a-friend": {
-            "body": {"level": f"one of: {', '.join(str(l) for l in FRIEND_LEVELS)}"},
-            "description": "For the 'api-user' side to move only: ask "
-                            "gnuchess what it would play in the current "
+            "body": {"level": f"one of: {', '.join(str(l) for l in FRIEND_LEVELS)}",
+                     "engine": f"optional, one of: {', '.join(ENGINE_NAMES)}, "
+                               "defaults to gnuchess"},
+            "description": "For the 'api-user' side to move only: ask an "
+                            "engine what it would play in the current "
                             "position, without submitting that move. Does "
                             "not change the board, does not end your "
                             "turn, and is not a substitute for "
                             "POST /api/game/move — you still submit your "
                             "own move afterward, whether or not you take "
                             "the suggestion. Each of the two levels "
-                            "(5 and 10) has its own budget for the game, "
+                            f"({FRIEND_LEVELS[0]} and {FRIEND_LEVELS[1]}) has its own budget for the game, "
                             "set at POST /api/game time (see "
                             "'friend_level5_limit'/'friend_level10_limit' "
                             "above; defaults "
-                            f"{DEFAULT_FRIEND_LIMITS[5]} and "
-                            f"{DEFAULT_FRIEND_LIMITS[10]} respectively) "
+                            f"{DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]]} and "
+                            f"{DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]} respectively) "
                             "and tracked separately per side, so a "
                             "two-api-user game gives each caller their "
-                            "own budget. Returns 400 if it is not your "
+                            "own budget. 'engine' picks which engine to "
+                            "ask. Returns 400 if it is not your "
                             "turn, your side is not 'api-user', 'level' "
-                            "is not 5 or 10, or you have no queries left "
+                            f"is not {FRIEND_LEVELS[0]} or {FRIEND_LEVELS[1]}, 'engine' is not a valid "
+                            "engine name, or you have no queries left "
                             "at that level. Response: {'advice': "
-                            "{'level', 'uci', 'san', 'color', 'used', "
-                            "'limit', 'remaining'}, 'state': {...}}. "
+                            "{'level', 'engine', 'uci', 'san', 'color', "
+                            "'used', 'limit', 'remaining'}, 'state': {...}}. "
                             "Current budget/usage for both sides is also "
                             "always visible in 'state.phone_a_friend'.",
         },
@@ -160,20 +176,36 @@ API_DOC = {
                             "not JSON, with a Content-Disposition header "
                             "so a browser downloads it as a .pgn file.",
         },
-        "GET /api/engine-levels": "List of valid gnuchess difficulty "
-                                   "levels (1=weakest..10=strongest) and "
-                                   "their search-depth/time-cap tuning.",
+        "GET /api/engine-levels": "The shared engine difficulty scale "
+                                   f"({LEVEL_MIN}=weakest..{LEVEL_MAX}=strongest) — "
+                                   "Stockfish's own native 'Skill Level' — "
+                                   "that both engines use, plus the list "
+                                   "of valid engine names.",
         "POST /api/game/level": {
             "body": {"level": f"{LEVEL_MIN}-{LEVEL_MAX}",
                      "color": "white|black, optional"},
-            "description": "Change the engine's difficulty. Omit 'color' "
-                            "to set both sides at once (all that matters "
-                            "when only one side is 'engine'); pass 'color' "
-                            "to change one side of an engine-vs-engine "
-                            "game without touching the other. Works "
-                            "whether or not a game is running, and takes "
-                            "effect on that side's next move. Returns the "
-                            "updated {'white': N, 'black': N}.",
+            "description": "Change an engine side's difficulty. Omit "
+                            "'color' to set both sides at once (all that "
+                            "matters when only one side is 'engine'); "
+                            "pass 'color' to change one side of an "
+                            "engine-vs-engine game without touching the "
+                            "other. Works whether or not a game is "
+                            "running, and takes effect on that side's "
+                            "next move. Returns the updated "
+                            "{'white': N, 'black': N}.",
+        },
+        "POST /api/game/engine": {
+            "body": {"engine": f"one of: {', '.join(ENGINE_NAMES)}",
+                     "color": "white|black, optional"},
+            "description": "Change which engine plays an 'engine' side. "
+                            "Omit 'color' to set both sides at once; pass "
+                            "'color' to change one side of an "
+                            "engine-vs-engine game without touching the "
+                            "other — use this to pit GNU Chess against "
+                            "Stockfish. Works whether or not a game is "
+                            "running, and takes effect on that side's "
+                            "next move. Returns the updated "
+                            "{'white': name, 'black': name}.",
         },
         "POST /api/game/name": {
             "body": {"color": "white|black", "name": "up to 40 chars"},
@@ -222,6 +254,9 @@ def create_api_app(game):
         level = body.get("level")
         white_level = body.get("white_level")
         black_level = body.get("black_level")
+        engine = body.get("engine")
+        white_engine = body.get("white_engine")
+        black_engine = body.get("black_engine")
         white_name = body.get("white_name")
         black_name = body.get("black_name")
         friend_level5_limit = body.get("friend_level5_limit")
@@ -229,6 +264,7 @@ def create_api_app(game):
         try:
             state, engine_move = game.new_game(
                 white, black, level=level, white_level=white_level, black_level=black_level,
+                engine=engine, white_engine=white_engine, black_engine=black_engine,
                 white_name=white_name, black_name=black_name,
                 friend_level5_limit=friend_level5_limit, friend_level10_limit=friend_level10_limit,
             )
@@ -269,6 +305,7 @@ def create_api_app(game):
     def post_phone_a_friend():
         body = request.get_json(silent=True) or {}
         level = body.get("level")
+        engine_name = body.get("engine")
         if level is None:
             return error(f"'level' is required (one of: {', '.join(str(l) for l in FRIEND_LEVELS)})")
         try:
@@ -276,7 +313,7 @@ def create_api_app(game):
         except (TypeError, ValueError):
             return error(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
         try:
-            advice = game.phone_a_friend(level)
+            advice = game.phone_a_friend(level, engine=engine_name)
         except GameError as e:
             return error(str(e))
         return jsonify(advice=advice, state=game.state())
@@ -329,6 +366,19 @@ def create_api_app(game):
         except GameError as e:
             return error(str(e))
         return jsonify(levels=new_levels)
+
+    @app.post("/api/game/engine")
+    def post_engine():
+        body = request.get_json(silent=True) or {}
+        engine_name = body.get("engine")
+        color = body.get("color")
+        if not engine_name:
+            return error(f"'engine' is required (one of: {', '.join(ENGINE_NAMES)})")
+        try:
+            new_engines = game.set_engine(engine_name, color=color)
+        except GameError as e:
+            return error(str(e))
+        return jsonify(engines=new_engines)
 
     @app.post("/api/game/name")
     def post_name():
