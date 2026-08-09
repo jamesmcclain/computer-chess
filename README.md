@@ -69,17 +69,22 @@ either to leave that side without a name. See `POST /api/game/name`
 below to set or change a name for a game already in progress.
 
 `friend_level10_limit` and `friend_level20_limit` (each optional,
-integers `0`-`50`, default `2` and `1` respectively) set this game's
-"phone a friend" budget: how many level-10 and level-20 engine hints
-an `"api-user"` side may request over the course of the game, for
-*both* engines at once. Each engine's quota is tracked separately, not
-pooled — `gnuchess_friend_level10_limit`/`gnuchess_friend_level20_limit`
-and `stockfish_friend_level10_limit`/`stockfish_friend_level20_limit`
+integers `0`-`50` or `-1` for unlimited, default `2` and `1`
+respectively) set this game's "phone a friend" budget: how many
+level-10 and level-20 engine hints an `"api-user"` side may request
+over the course of the game, for *both* engines at once. Each engine's
+quota is tracked separately, not pooled —
+`gnuchess_friend_level10_limit`/`gnuchess_friend_level20_limit` and
+`stockfish_friend_level10_limit`/`stockfish_friend_level20_limit`
 (each optional) set one engine's budget at one tier specifically, and
 win over the generic fields for that engine — so an `"api-user"` side
 can be given, say, 5 GNU Chess hints and 1 Stockfish hint, independent
-of each other. Like the name fields above, none of these are sticky —
-every new game gets the defaults shown above unless overridden here,
+of each other. Any of these six fields can be `-1` instead of a
+number, which makes that tier (for that engine, or for both engines
+via the generic fields) unlimited for the game — the query never
+fails for running out. Like the name fields above, none of these are
+sticky — every new game gets the defaults shown above unless
+overridden here,
 and usage always resets to zero. See `POST /api/game/phone-a-friend`
 below.
 
@@ -303,10 +308,13 @@ time (`friend_level10_limit`/`friend_level20_limit` for both engines
 at once, or the per-engine `gnuchess_friend_level*_limit`/
 `stockfish_friend_level*_limit` fields; default `2` and `1`
 respectively) and tracked separately per side, so in a two-API-user
-game each caller gets their own budget. `engine` (optional, `"gnuchess"`
-or `"stockfish"`) picks which engine to ask; defaults to `"gnuchess"`
-if omitted. GNU Chess hints and Stockfish hints draw on independent
-quotas, not a shared one — an `"api-user"` side can use both.
+game each caller gets their own budget. A budget can be set to `-1`
+for unlimited — then this call never fails for running out of
+queries at that tier for that engine. `engine` (optional,
+`"gnuchess"` or `"stockfish"`) picks which engine to ask; defaults to
+`"gnuchess"` if omitted. GNU Chess hints and Stockfish hints draw on
+independent quotas, not a shared one — an `"api-user"` side can use
+both.
 
 ```json
 {"advice": {"level": 20, "engine": "stockfish", "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},

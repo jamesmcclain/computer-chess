@@ -383,9 +383,9 @@ PAGE = """<!doctype html>
     <div class="start-row" id="start-friend-row" style="display:none;">
       <label>Friend calls</label>
       <span class="friend-inputs">
-        <input type="number" id="start-friend-l20" min="0" max="50" step="1" title="Level-20 phone-a-friend queries allowed per api-user side">
+        <input type="number" id="start-friend-l20" min="-1" max="50" step="1" title="Level-20 phone-a-friend queries allowed per api-user side (-1 = unlimited)">
         <span class="friend-inputs-tag">&times; L20</span>
-        <input type="number" id="start-friend-l10" min="0" max="50" step="1" title="Level-10 phone-a-friend queries allowed per api-user side">
+        <input type="number" id="start-friend-l10" min="-1" max="50" step="1" title="Level-10 phone-a-friend queries allowed per api-user side (-1 = unlimited)">
         <span class="friend-inputs-tag">&times; L10</span>
       </span>
     </div>
@@ -1026,13 +1026,15 @@ function sideLabel(state, color) {
     const f = state.phone_a_friend[color];
     if (f) {
       // Each engine has its own independent quota (see phone_a_friend()
-      // in game.py) — show both, e.g. "GNU Chess 1/1 L20, Stockfish 0/1 L20".
+      // in game.py) — show both, e.g. "GNU Chess 1/1 L20, Stockfish inf L20".
+      // A limit of -1 (FRIEND_LIMIT_UNLIMITED) means that tier has no cap.
+      const fmtTier = (remaining, limit) => limit === -1 ? "inf" : (remaining + "/" + limit);
       const perEngine = ENGINE_TYPES.map(e => {
         const eng = f[e.id];
         const limits = state.phone_a_friend.limits[e.id];
         if (!eng || !limits) return null;
-        return e.label + " " + eng.remaining.level_20 + "/" + limits.level_20 + " L20, " +
-          eng.remaining.level_10 + "/" + limits.level_10 + " L10";
+        return e.label + " " + fmtTier(eng.remaining.level_20, limits.level_20) + " L20, " +
+          fmtTier(eng.remaining.level_10, limits.level_10) + " L10";
       }).filter(Boolean).join("; ");
       typeLabel = type + (perEngine ? " (friend: " + perEngine + ")" : "");
     }

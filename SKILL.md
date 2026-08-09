@@ -133,11 +133,13 @@ Content-Type: application/json
   `stockfish_friend_level10_limit`/`stockfish_friend_level20_limit`
   (each optional) set one engine's budget specifically, winning over
   the generic fields for that engine — use them if the user wants,
-  say, more Stockfish hints than GNU Chess hints. Like the name
-  fields, none of these carry over: every new game gets the defaults
-  unless you set them here, and usage always starts at zero. Raise
-  them if the user wants more hints, or set any to `0` to turn that
-  tier off for that engine.
+  say, more Stockfish hints than GNU Chess hints. Any of these six
+  fields can be `-1` instead of a number, which makes that tier
+  unlimited (never runs out) for the game. Like the name fields, none
+  of these carry over: every new game gets the defaults unless you
+  set them here, and usage always starts at zero. Raise them if the
+  user wants more hints, set one to `-1` if they want no cap at all,
+  or set any to `0` to turn that tier off for that engine.
 - **Two engines can play each other, for a user who wants to watch
   instead of play.** Set both `white` and `black` to `"engine"`, with
   different `white_level`/`black_level` if you want. Neither side
@@ -458,7 +460,9 @@ Content-Type: application/json
   a shared one — asking GNU Chess for a hint does not use up your
   Stockfish budget, and vice versa. Each side has its own budget too,
   so in a two-`"api-user"` game your budget does not depend on your
-  opponent's.
+  opponent's. If the user set a budget to `-1` (unlimited), queries at
+  that tier for that engine never run out — `advice.remaining` (and
+  `state.phone_a_friend`) shows `-1` for it too.
 - Calling this does **not** change the board, end your turn, or count
   as your move. You must still submit your own move with
   `POST /api/game/move` (section 4.2) after, whether or not you take

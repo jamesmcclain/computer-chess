@@ -50,12 +50,13 @@ ENGINE_DISPLAY_NAMES = {"gnuchess": "GNU Chess", "stockfish": "Stockfish"}
 # submitting it — a hint, not a move. See ChessGame.phone_a_friend().
 # Only these two tiers on the shared 0-20 scale are offered ("call a
 # weaker friend" vs. "call a strong friend"), each budgeted separately
-# per side, per game, so an API user can't just re-ask a level-20
-# friend a hundred times.
+# per side, per engine, per game, so an API user can't just re-ask a
+# level-20 friend a hundred times.
 FRIEND_LEVELS = (10, 20)
 DEFAULT_FRIEND_LIMITS = {10: 2, 20: 1}
 FRIEND_LIMIT_MIN = 0  # 0 disables that tier entirely for the game
 FRIEND_LIMIT_MAX = 50  # sane ceiling; this is a hint budget, not a real resource
+FRIEND_LIMIT_UNLIMITED = -1  # sentinel: that tier has no budget cap at all
 
 # A side is one of three types:
 #   "api-user" — moves come from the REST API (port 5003), e.g. an agent or curl.
@@ -202,6 +203,15 @@ def _search_limit_for(engine_name, level):
         depth = 1 + round((level - LEVEL_MIN) * 14 / (LEVEL_MAX - LEVEL_MIN))
         return chess.engine.Limit(depth=depth, time=time_limit)
     return chess.engine.Limit(time=time_limit)
+
+
+def _friend_remaining(limit, used):
+    """Queries left at one phone-a-friend tier: FRIEND_LIMIT_UNLIMITED
+    (-1) if that tier has no cap (see _validate_friend_limit), else the
+    ordinary limit-minus-used, floored at 0."""
+    if limit == FRIEND_LIMIT_UNLIMITED:
+        return FRIEND_LIMIT_UNLIMITED
+    return max(0, limit - used)
 
 
 class GameError(Exception):
@@ -551,12 +561,14 @@ class ChessGame:
         except (TypeError, ValueError):
             raise GameError(
                 f"'friend_level{tier}_limit' must be an integer between "
-                f"{FRIEND_LIMIT_MIN} and {FRIEND_LIMIT_MAX}"
+                f"{FRIEND_LIMIT_MIN} and {FRIEND_LIMIT_MAX}, or {FRIEND_LIMIT_UNLIMITED} for unlimited"
             )
+        if value == FRIEND_LIMIT_UNLIMITED:
+            return value
         if not (FRIEND_LIMIT_MIN <= value <= FRIEND_LIMIT_MAX):
             raise GameError(
                 f"'friend_level{tier}_limit' must be between "
-                f"{FRIEND_LIMIT_MIN} and {FRIEND_LIMIT_MAX}"
+                f"{FRIEND_LIMIT_MIN} and {FRIEND_LIMIT_MAX}, or {FRIEND_LIMIT_UNLIMITED} for unlimited"
             )
         return value
 
@@ -624,7 +636,9 @@ class ChessGame:
                 name: {
                     "used": tiers(self.friend_used[color][name]),
                     "remaining": {
-                        f"level_{tier}": max(0, self.friend_limits[name][tier] - self.friend_used[color][name][tier])
+                        f"level_{tier}": _friend_remaining(
+                            self.friend_limits[name][tier], self.friend_used[color][name][tier]
+                        )
                         for tier in FRIEND_LEVELS
                     },
                 }
@@ -958,7 +972,7 @@ class ChessGame:
             color = "white" if self.board.turn == chess.WHITE else "black"
             used = self.friend_used[color][engine_name][level]
             limit = self.friend_limits[engine_name][level]
-            if used >= limit:
+            if limit != FRIEND_LIMIT_UNLIMITED and used >= limit:
                 raise GameError(
                     f"phone-a-friend limit reached for {engine_name} level {level} "
                     f"({used} of {limit} used this game)"
@@ -988,7 +1002,7 @@ class ChessGame:
                 "color": color,
                 "used": self.friend_used[color][engine_name][level],
                 "limit": limit,
-                "remaining": max(0, limit - self.friend_used[color][engine_name][level]),
+                "remaining": _friend_remaining(limit, self.friend_used[color][engine_name][level]),
             }
 
     def resign(self, player):

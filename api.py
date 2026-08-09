@@ -12,6 +12,7 @@ from game import (
     FRIEND_LEVELS,
     FRIEND_LIMIT_MAX,
     FRIEND_LIMIT_MIN,
+    FRIEND_LIMIT_UNLIMITED,
     GameError,
     LEVEL_MAX,
     LEVEL_MIN,
@@ -37,17 +38,23 @@ API_DOC = {
                      "black_engine": f"one of: {', '.join(ENGINE_NAMES)}, optional",
                      "white_name": "optional, up to 40 chars",
                      "black_name": "optional, up to 40 chars",
-                     "friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
+                     "friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
+                                              f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
                                               f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]]}, both engines",
-                     "friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
+                     "friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
+                                              f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
                                               f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]}, both engines",
-                     "gnuchess_friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
+                     "gnuchess_friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
+                                                       f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
                                                        "wins over friend_level10_limit for gnuchess",
-                     "gnuchess_friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
+                     "gnuchess_friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
+                                                       f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
                                                        "wins over friend_level20_limit for gnuchess",
-                     "stockfish_friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
+                     "stockfish_friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
+                                                        f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
                                                         "wins over friend_level10_limit for stockfish",
-                     "stockfish_friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
+                     "stockfish_friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
+                                                        f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
                                                         "wins over friend_level20_limit for stockfish"},
             "description": "Start a new game, replacing any game already "
                             "in progress. Both sides can be 'engine'; the "
@@ -84,14 +91,18 @@ API_DOC = {
                             "engine's budget at one tier specifically, and "
                             "win over the generic fields for that engine, "
                             "so an 'api-user' side can be given hints from "
-                            "both engines independently. Unlike the "
-                            "level/name settings above, none of these are "
-                            "sticky: every new game gets the defaults "
-                            "shown above unless overridden here, and usage "
-                            "always resets to zero. If white is 'engine' "
-                            "and black is not, that engine's opening move "
-                            "is played immediately and returned as "
-                            "'engine_move'.",
+                            "both engines independently. Any of these six "
+                            "limit fields can be set to "
+                            f"{FRIEND_LIMIT_UNLIMITED} to make that tier "
+                            "unlimited for that engine (or both engines, "
+                            "via the generic fields) instead of capped. "
+                            "Unlike the level/name settings above, none of "
+                            "these are sticky: every new game gets the "
+                            "defaults shown above unless overridden here, "
+                            "and usage always resets to zero. If white is "
+                            "'engine' and black is not, that engine's "
+                            "opening move is played immediately and "
+                            "returned as 'engine_move'.",
         },
         "GET /api/game": "Current game state (board, whose turn it is, "
                           "status, move log — including any chat attached "
@@ -167,7 +178,13 @@ API_DOC = {
                             "and tracked separately per side, so a "
                             "two-api-user game gives each caller their "
                             "own budget. 'engine' picks which engine to "
-                            "ask. Returns 400 if it is not your "
+                            "ask. A budget set to "
+                            f"{FRIEND_LIMIT_UNLIMITED} is unlimited — "
+                            "'remaining' in the response, and in "
+                            "'state.phone_a_friend', is also "
+                            f"{FRIEND_LIMIT_UNLIMITED} in that case, and "
+                            "the query never fails for running out. "
+                            "Returns 400 if it is not your "
                             "turn, your side is not 'api-user', 'level' "
                             f"is not {FRIEND_LEVELS[0]} or {FRIEND_LEVELS[1]}, 'engine' is not a valid "
                             "engine name, or you have no queries left "
