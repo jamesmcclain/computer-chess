@@ -244,7 +244,7 @@ move.
 `status` is one of: `not_started`, `in_progress`, `checkmate`,
 `stalemate`, `draw_insufficient_material`, `draw_75_moves`,
 `draw_5fold_repetition`, `draw_claimable_50_moves`,
-`draw_claimable_threefold_repetition`, `resigned`.
+`draw_claimable_threefold_repetition`, `resigned`, `aborted`.
 
 `engine_names` shows which engine (`"gnuchess"` or `"stockfish"`)
 plays each `"engine"` side — see `POST /api/game/engine` above. Its
@@ -385,6 +385,16 @@ you've called this endpoint yet.
 This endpoint ends the game. The API records the other side as the
 winner.
 
+### `POST /api/game/abort` — end the game with no winner
+
+No request body. Immediately ends the current game (status `aborted`,
+`winner: null`) regardless of player types — unlike `POST /api/game/resign`,
+no `player` side is needed, so this also works for an engine-vs-engine
+game with no `"web-user"`/`"api-user"` side at all. An engine-vs-engine
+game's background autoplay stops within one already-in-flight move of
+this call. Returns `400` if no game has started or the current game
+has already ended.
+
 ### `GET /api/game/transcript` — download a PGN transcript
 
 Only once the game has ended (any status but `not_started`/
@@ -488,13 +498,13 @@ automatically to whichever move they submit next.
 **Resign or restart.** While a game is in progress, a button appears
 above the board. If a person is behind either side (at least one
 side is `web-user`), it reads "Resign" and ends the game as that
-side, the same as `POST /api/game/resign`. The start form then
+side, the same as `POST /api/game/resign`. If no side is `web-user`
+(an api-user/engine or engine-vs-engine game, for example), it reads
+"Restart" instead, and ends the game immediately with no winner, the
+same as `POST /api/game/abort` — an engine-vs-engine match actually
+stops on the spot rather than continuing to play in the background
+while a new game's settings are chosen. Either way, the start form
 reappears automatically, same as after any other game-ending result.
-If no side is `web-user` (an api-user/engine or engine-vs-engine
-game, for example), it reads "Restart" instead. It simply opens the
-start form early, without ending the running game on its own. The
-running game only actually stops once a new one is started from that
-form.
 
 **Last-move arrow.** After a move, a semi-transparent arrow points
 from its start square to its end square, on top of the piece that
@@ -504,8 +514,8 @@ fades on its own after 60 seconds of no further move, and clears
 when a new game starts.
 
 The page's own `/game/start`, `/game/move`, `/game/legal-moves`,
-`/game/resign`, `/game/chat`, and `/game/eval-quality` routes back
-these features. They call the same `ChessGame` object as the REST API
+`/game/resign`, `/game/abort`, `/game/chat`, and `/game/eval-quality`
+routes back these features. They call the same `ChessGame` object as the REST API
 (port 5003), so they enforce the same rules. They exist only so the
 page's own JS can act on the game from its own origin. `api.py` (port
 5003) stays the reference for programmatic play.

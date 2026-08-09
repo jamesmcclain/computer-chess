@@ -538,9 +538,10 @@ the move history yourself.
   | `draw_claimable_50_moves`                 | Draw claimable (50-move rule reached)       |
   | `draw_claimable_threefold_repetition`     | Draw claimable (threefold repetition)       |
   | `resigned`                                | A side resigned                             |
+  | `aborted`                                 | Someone ended the game early, no winner (e.g. the board viewer's Restart button) |
 
-  `state.winner` is `"white"`, `"black"`, or `null` (a draw, or no
-  result yet). On checkmate or resignation, this field names the
+  `state.winner` is `"white"`, `"black"`, or `null` (a draw, an abort,
+  or no result yet). On checkmate or resignation, this field names the
   winner directly — do not compute it yourself.
 
 - Once `game_over` is `true`, `POST /api/game/move` starts to return

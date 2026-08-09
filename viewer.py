@@ -557,12 +557,6 @@ const ARROW_FADE_MS = 60000;
 // updateChatPanel().
 let lastChatMoveLogLength = 0;
 
-// Set by the "Restart" button (see updateGameControls()) to force the
-// start-game form open even though a game is still in progress — plain
-// `!state.started || state.game_over` isn't enough for that case. Cleared
-// once a new game actually starts (see initStartPanel()'s start handler).
-let forceStartPanel = false;
-
 // ---------------------------------------------------------------------
 // Style state: persisted in localStorage so it's remembered per-browser
 // across reloads, independent of whatever game is being watched.
@@ -987,14 +981,14 @@ function render(state) {
   clearSelection(); // any server-pushed state invalidates a local selection
 
   // Offer the start-game form whenever there's no game to watch — never
-  // started, or the last one already finished — or when the Restart
-  // button forced it open early (see doRestart()).
-  const needsStart = !state.started || state.game_over || forceStartPanel;
+  // started, or the last one already finished (including a Restart —
+  // see doRestart(), which ends the running game outright via
+  // POST /game/abort before this ever needs to distinguish "finished"
+  // from "still going").
+  const needsStart = !state.started || state.game_over;
   startPanelEl.style.display = needsStart ? "flex" : "none";
-  // The transcript button tracks game_over specifically (not needsStart —
-  // forceStartPanel from the Restart button shouldn't show it, since that
-  // game hasn't actually ended). It disappears again the moment a new
-  // game starts, since that flips game_over back to false.
+  // Disappears again the moment a new game starts, since that flips
+  // game_over back to false.
   transcriptBtnEl.style.display = (state.started && state.game_over) ? "inline-block" : "none";
 
   if (!state.started) {
@@ -1197,10 +1191,18 @@ async function doResign(color) {
   }
 }
 
-function doRestart() {
-  if (!confirm("Start a new game now? This ends the current one for everyone watching.")) return;
-  forceStartPanel = true;
-  startPanelEl.style.display = "flex";
+async function doRestart() {
+  if (!confirm("Restart now? This ends the current game for everyone watching.")) return;
+  try {
+    await fetch("/game/abort", { method: "POST" });
+    // The game-over state (and the start panel it brings back — see
+    // render()) arrives through the SSE stream like any other change;
+    // this call is what actually stops an engine-vs-engine match from
+    // continuing to play while the new-game form is being filled out.
+  } catch (e) {
+    statusEl.textContent = "Could not reach the server to restart.";
+    return;
+  }
   startPanelEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
@@ -1425,10 +1427,9 @@ async function initStartPanel() {
       const data = await res.json();
       if (!res.ok) {
         errEl.textContent = data.error || "Could not start the game.";
-      } else {
-        forceStartPanel = false; // a real new game now exists; stop forcing the panel open
       }
-      // On success, the new state arrives through the SSE stream.
+      // On success, the new state arrives through the SSE stream, which
+      // naturally hides the start panel again (state.started/game_over).
     } catch (e) {
       errEl.textContent = "Could not reach the server.";
     } finally {
@@ -1641,6 +1642,20 @@ def create_viewer_app(game):
         player = body.get("player")
         try:
             state = game.resign(player)
+        except GameError as e:
+            return _error(str(e))
+        return jsonify(state=state)
+
+    @app.post("/game/abort")
+    def game_abort():
+        """Backs the page's Restart button when no side is 'web-user'
+        (an engine-vs-engine or api-user/engine game — see the JS'
+        resignColorFor()): immediately ends the running game with no
+        winner, same as the REST API's POST /api/game/abort, so an
+        engine-vs-engine match actually stops instead of continuing to
+        play while the new-game form is filled out."""
+        try:
+            state = game.abort()
         except GameError as e:
             return _error(str(e))
         return jsonify(state=state)

@@ -210,6 +210,19 @@ API_DOC = {
             "body": {"player": "white|black"},
             "description": "Resign on behalf of a side, ending the game.",
         },
+        "POST /api/game/abort": {
+            "body": {},
+            "description": "Immediately end the current game with no "
+                            "winner (status 'aborted'), regardless of "
+                            "player types — unlike POST /api/game/resign, "
+                            "no 'player' side is needed, so this also "
+                            "works for an engine-vs-engine game with no "
+                            "'web-user'/'api-user' side at all. An "
+                            "engine-vs-engine game's background autoplay "
+                            "stops within one already-in-flight move of "
+                            "this call. Returns 400 if no game has "
+                            "started or the current game already ended.",
+        },
         "GET /api/game/transcript": {
             "description": "Only once the game has ended (any status but "
                             "'in_progress'/'not_started'): a PGN "
@@ -422,6 +435,14 @@ def create_api_app(game):
         player = body.get("player")
         try:
             state = game.resign(player)
+        except GameError as e:
+            return error(str(e))
+        return jsonify(state=state)
+
+    @app.post("/api/game/abort")
+    def post_abort():
+        try:
+            state = game.abort()
         except GameError as e:
             return error(str(e))
         return jsonify(state=state)

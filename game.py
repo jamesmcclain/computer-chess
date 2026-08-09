@@ -136,6 +136,7 @@ FINISHED_STATUSES = (
     "draw_claimable_50_moves",
     "draw_claimable_threefold_repetition",
     "resigned",
+    "aborted",
 )
 
 # transcript()'s PGN "Termination" tag — a standard supplementary PGN tag
@@ -151,6 +152,7 @@ TERMINATION_LABELS = {
     "draw_claimable_50_moves": "draw (50-move rule claimable)",
     "draw_claimable_threefold_repetition": "draw (threefold repetition claimable)",
     "resigned": "resignation",
+    "aborted": "aborted",
 }
 
 # transcript()'s PGN White/Black tags fall back to this when a side has
@@ -671,6 +673,8 @@ class ChessGame:
     def _game_over_reason(self):
         if self.result_reason == "resigned":
             return "resigned"
+        if self.result_reason == "aborted":
+            return "aborted"
         board = self.board
         if board.is_checkmate():
             return "checkmate"
@@ -882,7 +886,24 @@ class ChessGame:
         by new_game(), where the previous game's score is meaningless
         for a fresh board), the previous score_cp/mate stay in place
         while pending, so the bar holds its last position instead of
-        flickering to neutral on every move."""
+        flickering to neutral on every move.
+
+        Once the game has actually ended (checkmate, stalemate, a draw,
+        a resignation, or an abort), this does nothing at all — no new
+        analysis, self.eval left exactly as it was — instead of
+        analysing the now-terminal position (which has no legal moves,
+        so an engine can only report a degenerate "mate in 0" there) or
+        blanking the bar. The eval bar simply holds its last real read
+        from just before the game ended, since that's the meaningful
+        number a person watching cares about, and a checkmated position
+        collapsing the bar to one color reads as the loser's read, not
+        the winner's. Note this means self._eval_generation is *not*
+        bumped here, unlike every other path below — a genuinely
+        in-flight analysis of that last real position (started just
+        before the game ended) is still exactly what should land and
+        clear "pending" when it completes, not get discarded."""
+        if self.eval_quality != "off" and self.started and self._status() != "in_progress":
+            return
         self._eval_generation += 1
         generation = self._eval_generation
         if self.eval_quality == "off" or not self.started:
@@ -1178,6 +1199,28 @@ class ChessGame:
             self._bump_version_locked()
             return self.state()
 
+    def abort(self):
+        """Immediately end the current game with no winner (status
+        "aborted"), regardless of player types — unlike resign(), this
+        doesn't need a 'player' side to act as, so it also works for a
+        game with no 'web-user'/'api-user' side at all (an engine-vs-
+        engine match). Mainly for a spectator, or the board viewer's
+        Restart button, to stop a running engine-vs-engine game on the
+        spot instead of waiting for it to finish or letting it keep
+        playing while a new game's settings are being chosen. A
+        background engine-vs-engine autoplay loop (see _start_autoplay)
+        checks status before every move, so it stops playing within one
+        more already-in-flight move of this call. Returns the updated
+        state, same shape as GET /api/game."""
+        with self._lock:
+            if not self.started:
+                raise GameError("no game in progress; POST /api/game to start one")
+            if self._status() != "in_progress":
+                raise GameError(f"game is not in progress (status: {self._status()})")
+            self.result_reason = "aborted"
+            self._bump_version_locked()
+            return self.state()
+
     def transcript(self):
         """Build a PGN (Portable Game Notation) transcript of the game
         that just ended — the standard plain-text chess-game format;
@@ -1227,6 +1270,8 @@ class ChessGame:
             result = "0-1"
         elif status == "resigned":
             result = "*"  # shouldn't happen — resign() always sets a winner
+        elif status == "aborted":
+            result = "*"  # PGN's "unknown/unterminated" result — no winner, not a draw
         else:
             result = "1/2-1/2"
 
