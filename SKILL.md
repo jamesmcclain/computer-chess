@@ -74,6 +74,11 @@ Core facts to remember:
   Stockfish, so you can draw on both. See section 4.5.
 - **Once the game ends, a PGN transcript is available.** It folds in
   every move's chat and reasoning. See section 5.1.
+- **`state.eval` is a live Stockfish read on who is winning** — the
+  board viewer's eval bar. It is purely informational, runs on its own
+  separate Stockfish process, and has nothing to do with your side or
+  turn — you do not need to read it to play correctly, and it is not a
+  substitute for your own analysis or `phone_a_friend`. See README.md.
 
 ## 1. Starting a new game
 

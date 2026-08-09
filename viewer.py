@@ -46,7 +46,7 @@ import os
 
 from flask import Flask, Response, jsonify, render_template_string, request, stream_with_context
 
-from game import GameError, describe_levels
+from game import EVAL_QUALITIES, GameError, describe_eval_qualities, describe_levels
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -239,7 +239,30 @@ PAGE = """<!doctype html>
      frame — the practical benefit a heavier engine like three.js would
      bring here, without standing up a WebGL context for what is
      fundamentally a flat 2D grid of images. */
+  #board-row { display: flex; align-items: center; justify-content: center; gap: 0.7rem; width: 100%; flex: 1 1 auto; min-height: 0; }
   #board-wrap { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; width: 100%; min-height: 0; }
+
+  /* ---- eval bar -----------------------------------------------------
+     A vertical bar showing the eval-bar engine's live Stockfish
+     assessment of the position, White's share on top (light) growing
+     down over Black's share (dark) — mirrors how a chess.com/lichess
+     eval bar reads. Sized in JS (fitBoard) to match the board's own
+     height, since #board is sized there too. */
+  #eval-bar-wrap { display: flex; flex-direction: column; align-items: center; gap: 0.3rem; flex: 0 0 auto; }
+  #eval-bar {
+    width: 1.1rem; border-radius: 4px; overflow: hidden; background: #1a1a1a;
+    border: 1px solid var(--panel-border); display: flex; flex-direction: column;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  }
+  #eval-bar-fill {
+    width: 100%; background: #f0d9b5; margin-top: auto; /* grows up from the bottom = Black's share */
+    transition: height 0.4s ease, background 0.4s ease;
+  }
+  #eval-bar-label {
+    font-size: 0.68rem; color: #999; font-variant-numeric: tabular-nums;
+    min-width: 2.6em; text-align: center;
+  }
+  #eval-quality-desc { color: #888; font-size: 0.68rem; line-height: 1.35; min-height: 2.6em; }
   #board {
     position: relative;
     display: grid;
@@ -422,6 +445,12 @@ PAGE = """<!doctype html>
         <div class="ctrl-row"><label>Black</label><select id="piece-black"></select></div>
       </div>
     </div>
+
+    <div class="ctrl-group">
+      <div class="ctrl-title">Eval bar</div>
+      <select id="eval-quality-sel"></select>
+      <div id="eval-quality-desc"></div>
+    </div>
   </div>
 
   <div id="players-bar">
@@ -432,7 +461,13 @@ PAGE = """<!doctype html>
 
   <button id="game-control-btn"></button>
 
-  <div id="board-wrap"><div id="board"></div><div id="promo-picker"></div></div>
+  <div id="board-row">
+    <div id="eval-bar-wrap" title="">
+      <div id="eval-bar"><div id="eval-bar-fill"></div></div>
+      <div id="eval-bar-label"></div>
+    </div>
+    <div id="board-wrap"><div id="board"></div><div id="promo-picker"></div></div>
+  </div>
   <div id="meta"></div>
   <div id="chat-panel">
     <div class="chat-title">Chat</div>
@@ -476,6 +511,14 @@ const chatInputRowEl = document.getElementById("chat-input-row");
 const chatInputEl = document.getElementById("chat-input");
 const gameControlBtnEl = document.getElementById("game-control-btn");
 const transcriptBtnEl = document.getElementById("transcript-btn");
+const evalBarWrapEl = document.getElementById("eval-bar-wrap");
+const evalBarEl = document.getElementById("eval-bar");
+const evalBarFillEl = document.getElementById("eval-bar-fill");
+const evalBarLabelEl = document.getElementById("eval-bar-label");
+const evalQualitySelEl = document.getElementById("eval-quality-sel");
+const evalQualityDescEl = document.getElementById("eval-quality-desc");
+
+let evalQualities = []; // [{id, label, description}, ...], loaded from /game/eval-qualities
 
 // cellEls[r][c] = the .sq div. lastCodes[r][c] = piece code last painted
 // there ("wN", etc.) or null. Built once; reused across every update so
@@ -955,6 +998,7 @@ function render(state) {
     moveArrowLineEl = null;
     moveArrowHeadEl = null;
     boardWrapEl.style.display = "none";
+    evalBarWrapEl.style.display = "none";
     playersBarEl.style.display = "none";
     gameControlBtnEl.style.display = "none";
     chatPanelEl.style.display = "none";
@@ -969,6 +1013,7 @@ function render(state) {
 
   boardWrapEl.style.display = "flex";
   if (!cellEls) buildBoard();
+  updateEvalBar(state);
 
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
@@ -1168,9 +1213,94 @@ function fitBoard() {
   const size = Math.max(160, Math.floor(Math.min(rect.width, rect.height)) - 8);
   boardEl.style.width = size + "px";
   boardEl.style.height = size + "px";
+  evalBarEl.style.height = size + "px"; // eval bar always matches the board's own height
 }
 new ResizeObserver(fitBoard).observe(boardWrapEl);
 window.addEventListener("resize", fitBoard);
+
+// ---------------------------------------------------------------------
+// Eval bar — a live Stockfish read on who is winning, from its own
+// dedicated engine process (see game.py's ChessGame._ensure_eval_engine)
+// entirely separate from any engine playing a side or answering a
+// phone-a-friend query. state.eval is {"quality", "pov", "score_cp",
+// "mate", "pending", "error"} — see GET /api/game in README.md.
+// ---------------------------------------------------------------------
+
+// Rough win-probability curve (the same shape chess sites use for their
+// eval bars): centipawns -> White's share of the bar, 0..1. Not a
+// calibrated probability, just a reasonable squashing function so a
+// won position reads as "mostly full" rather than swinging wildly.
+function whiteShareFromCp(scoreCp) {
+  return 1 / (1 + Math.pow(10, -scoreCp / 400));
+}
+
+function updateEvalBar(state) {
+  const ev = state.eval;
+  if (!ev || ev.quality === "off") {
+    evalBarWrapEl.style.display = "none";
+    return;
+  }
+  evalBarWrapEl.style.display = "flex";
+
+  const haveMate = ev.mate !== null && ev.mate !== undefined;
+  const haveScore = ev.score_cp !== null && ev.score_cp !== undefined;
+  let whiteShare = 0.5; // no data yet (right after a new game) — show a neutral bar
+  if (haveMate) whiteShare = ev.mate > 0 ? 1 : 0;
+  else if (haveScore) whiteShare = whiteShareFromCp(ev.score_cp);
+  evalBarFillEl.style.height = (whiteShare * 100) + "%";
+
+  let label = "\\u2026"; // ellipsis: still computing the first evaluation
+  if (ev.error) label = "err";
+  else if (haveMate) label = "M" + Math.abs(ev.mate);
+  else if (haveScore) {
+    const pawns = ev.score_cp / 100;
+    label = (pawns >= 0 ? "+" : "") + pawns.toFixed(1);
+  }
+  evalBarLabelEl.textContent = label;
+  evalBarWrapEl.title = ev.error ? ("Eval bar error: " + ev.error)
+    : ev.pending ? "Evaluating\\u2026 (showing the last position's read)"
+    : "Stockfish eval, White's perspective. Positive favors White.";
+
+  // Reflect the current quality in the selector — it's a sticky,
+  // server-side setting (see POST /game/eval-quality), so another tab
+  // or an API caller changing it should show up here too.
+  if (evalQualitySelEl.value !== ev.quality) {
+    evalQualitySelEl.value = ev.quality;
+    updateEvalQualityDesc(ev.quality);
+  }
+}
+
+function updateEvalQualityDesc(qualityId) {
+  const q = evalQualities.find(q => q.id === qualityId);
+  evalQualityDescEl.textContent = q ? q.description : "";
+}
+
+async function initEvalControls() {
+  try {
+    const res = await fetch("/game/eval-qualities");
+    const data = await res.json();
+    evalQualities = data.qualities || [];
+    fillSelect(evalQualitySelEl, evalQualities, data.default);
+  } catch (e) {
+    evalQualities = [];
+  }
+  updateEvalQualityDesc(evalQualitySelEl.value);
+  evalQualitySelEl.addEventListener("change", async () => {
+    const quality = evalQualitySelEl.value;
+    updateEvalQualityDesc(quality);
+    try {
+      await fetch("/game/eval-quality", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quality }),
+      });
+      // The new eval (or the "off" bar-hide) arrives through the SSE stream.
+    } catch (e) {
+      // Best-effort — the selector already reflects the intended choice;
+      // the next state push will correct it if the request didn't land.
+    }
+  });
+}
 
 // ---------------------------------------------------------------------
 // Start-a-new-game panel
@@ -1314,6 +1444,7 @@ async function boot() {
   }
   initControls();
   await initStartPanel();
+  await initEvalControls();
   fitBoard();
   startFeed();
 }
@@ -1418,6 +1549,22 @@ def create_viewer_app(game):
     @app.get("/game/engine-levels")
     def game_engine_levels():
         return jsonify(describe_levels())
+
+    @app.get("/game/eval-qualities")
+    def game_eval_qualities():
+        return jsonify(describe_eval_qualities())
+
+    @app.post("/game/eval-quality")
+    def game_eval_quality():
+        body = request.get_json(silent=True) or {}
+        quality = body.get("quality")
+        if not quality:
+            return _error(f"'quality' is required (one of: {', '.join(EVAL_QUALITIES)})")
+        try:
+            result = game.set_eval_quality(quality)
+        except GameError as e:
+            return _error(str(e))
+        return jsonify(result)
 
     @app.post("/game/start")
     def game_start():

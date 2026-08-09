@@ -58,6 +58,33 @@ FRIEND_LIMIT_MIN = 0  # 0 disables that tier entirely for the game
 FRIEND_LIMIT_MAX = 50  # sane ceiling; this is a hint budget, not a real resource
 FRIEND_LIMIT_UNLIMITED = -1  # sentinel: that tier has no budget cap at all
 
+# The "eval bar": a live Stockfish assessment of who is winning the
+# current position, shown as a vertical bar in the board viewer. It runs
+# on its own dedicated Stockfish process (see ChessGame._ensure_eval_engine)
+# — never the process(es) used to play an "engine" side or to answer
+# phone_a_friend() — so it never shares a Skill Level setting or a UCI
+# command queue with actual gameplay, and never slows a move down.
+# `quality` trades update latency against how deep/accurate the
+# assessment is; each level is a plain movetime cap in seconds. "off"
+# disables the eval bar entirely (no engine call, no CPU spent) — the
+# whole point of exposing this as a choice is that some people would
+# rather not pay a second Stockfish process's CPU/latency cost at all.
+EVAL_QUALITIES = ("off", "fast", "balanced", "deep")
+EVAL_QUALITY_TIME_LIMITS = {"fast": 0.1, "balanced": 0.3, "deep": 1.0}  # seconds; "off" has no entry
+EVAL_QUALITY_LABELS = {
+    "off": "Off",
+    "fast": "Fast",
+    "balanced": "Balanced",
+    "deep": "Deep",
+}
+EVAL_QUALITY_DESCRIPTIONS = {
+    "off": "No eval bar. Stockfish does no extra work for it.",
+    "fast": "Updates almost instantly. The assessment is shallow and can be noisy.",
+    "balanced": "A good default: updates quickly and is accurate enough for most positions.",
+    "deep": "Slower to update, especially during a fast engine-vs-engine game. The most accurate assessment.",
+}
+DEFAULT_EVAL_QUALITY = "balanced"
+
 # A side is one of three types:
 #   "api-user" — moves come from the REST API (port 5003), e.g. an agent or curl.
 #   "web-user"  — moves come from a person clicking the board in the browser
@@ -149,6 +176,21 @@ def describe_levels():
         "max": LEVEL_MAX,
         "default": DEFAULT_LEVEL,
         "engines": list(ENGINE_NAMES),
+    }
+
+
+def describe_eval_qualities():
+    """{"qualities": [{"id", "label", "description"}, ...], "default"}
+    describing the eval bar's speed/accuracy trade-off levels (see
+    EVAL_QUALITIES above) — see GET /api/eval-qualities. Meant to be
+    shown directly in a UI so a person can pick the trade-off that
+    suits them, not just read about it in docs."""
+    return {
+        "qualities": [
+            {"id": q, "label": EVAL_QUALITY_LABELS[q], "description": EVAL_QUALITY_DESCRIPTIONS[q]}
+            for q in EVAL_QUALITIES
+        ],
+        "default": DEFAULT_EVAL_QUALITY,
     }
 
 
@@ -273,6 +315,19 @@ class ChessGame:
         self._generation = 0  # bumped on every new_game(); see _start_autoplay
         self._engines = {}  # engine name -> chess.engine.SimpleEngine, lazily started
 
+        # Eval bar (see EVAL_QUALITIES above): its own dedicated Stockfish
+        # process, its own lock (calls run in a background thread, outside
+        # self._lock, so a slow evaluation never blocks a move), and a
+        # generation counter so a result computed for a position that has
+        # since been moved past gets discarded instead of overwriting a
+        # newer one out of order.
+        self._eval_engine = None  # chess.engine.SimpleEngine, lazily started; eval-bar only
+        self._eval_lock = threading.Lock()  # serializes calls to _eval_engine
+        self._eval_generation = 0
+        self.eval_quality = DEFAULT_EVAL_QUALITY  # sticky across games, like engine_levels/engine_names
+        self.eval = {"quality": self.eval_quality, "pov": "white",
+                     "score_cp": None, "mate": None, "pending": False, "error": None}
+
         self.board = chess.Board()
         self.white_type = None       # "api-user" | "web-user" | "engine"
         self.black_type = None       # "api-user" | "web-user" | "engine"
@@ -343,6 +398,19 @@ class ChessGame:
             self._engines[engine_name] = engine
         return engine
 
+    def _ensure_eval_engine(self):
+        """Lazily start the eval bar's own dedicated Stockfish process
+        (see EVAL_QUALITIES above). Caller must hold self._eval_lock, not
+        self._lock — this process is never touched by _ensure_engine(),
+        _play_engine_move_locked(), or phone_a_friend(), and its Skill
+        Level is never changed from Stockfish's own default (maximum
+        strength), so its assessment stays honest regardless of what
+        difficulty either side is set to."""
+        if self._eval_engine is None:
+            path = _find_stockfish()
+            self._eval_engine = chess.engine.SimpleEngine.popen_uci(path)
+        return self._eval_engine
+
     def _configure_engine_locked(self, engine, engine_name, level):
         """Caller must hold self._lock. Applies `level` (0-20) to
         `engine` for its next move, for the engines that need per-call
@@ -362,6 +430,13 @@ class ChessGame:
                 except Exception:
                     pass
             self._engines = {}
+        with self._eval_lock:
+            if self._eval_engine is not None:
+                try:
+                    self._eval_engine.quit()
+                except Exception:
+                    pass
+                self._eval_engine = None
 
     # ---- game lifecycle -----------------------------------------------------
 
@@ -499,6 +574,7 @@ class ChessGame:
                 # same as before — the response's 'engine_move' reflects it.
                 engine_move = self._play_engine_move_locked()
 
+            self._trigger_eval_locked(reset=True)
             self._bump_version_locked()
             state = self.state()
 
@@ -528,6 +604,7 @@ class ChessGame:
                     if self._status() != "in_progress":
                         return  # checkmate, draw, or a resignation
                     entry = self._play_engine_move_locked()
+                    self._trigger_eval_locked()
                     self._bump_version_locked()
                 if entry is None:
                     return
@@ -770,6 +847,83 @@ class ChessGame:
             self._bump_version_locked()
             return dict(self.engine_names)
 
+    def set_eval_quality(self, quality):
+        """Change the eval bar's speed/accuracy trade-off (see
+        EVAL_QUALITIES above) — "off" turns the eval bar off entirely.
+        Sticky across games, like set_level()/set_engine(): applies from
+        now on regardless of whether a game is running, and survives to
+        the next game. Immediately re-evaluates the current position (if
+        any) at the new quality. Returns {"eval_quality": quality}."""
+        quality = self._validate_eval_quality(quality)
+        with self._lock:
+            self.eval_quality = quality
+            self._trigger_eval_locked()
+            self._bump_version_locked()
+            return {"eval_quality": self.eval_quality}
+
+    def _validate_eval_quality(self, quality):
+        quality = (quality or "").strip().lower()
+        if quality not in EVAL_QUALITIES:
+            raise GameError(f"'eval_quality' must be one of: {', '.join(EVAL_QUALITIES)}")
+        return quality
+
+    def _trigger_eval_locked(self, reset=False):
+        """Caller must hold self._lock. (Re)computes the eval bar's
+        assessment of the current position in the background, on the
+        dedicated eval engine (see _ensure_eval_engine) — never the
+        engine(s) used for actual gameplay, and never blocking the
+        caller. Bumps self._eval_generation first; the background result
+        is discarded on arrival if that counter has moved on again by
+        then (a later move, a new game, or a quality change), so results
+        can never apply out of order. Does nothing but reset self.eval to
+        its "off"/empty shape when eval_quality is "off" or no game has
+        started — no engine call, no CPU spent. Otherwise sets
+        self.eval["pending"] True right away; unless `reset` (used only
+        by new_game(), where the previous game's score is meaningless
+        for a fresh board), the previous score_cp/mate stay in place
+        while pending, so the bar holds its last position instead of
+        flickering to neutral on every move."""
+        self._eval_generation += 1
+        generation = self._eval_generation
+        if self.eval_quality == "off" or not self.started:
+            self.eval = {"quality": self.eval_quality, "pov": "white",
+                         "score_cp": None, "mate": None, "pending": False, "error": None}
+            return
+        if reset:
+            self.eval = {"quality": self.eval_quality, "pov": "white",
+                         "score_cp": None, "mate": None, "pending": True, "error": None}
+        else:
+            self.eval = {**self.eval, "quality": self.eval_quality, "pending": True, "error": None}
+        board_copy = self.board.copy()
+        quality = self.eval_quality
+        threading.Thread(
+            target=self._run_eval, args=(generation, board_copy, quality),
+            daemon=True, name="eval-bar",
+        ).start()
+
+    def _run_eval(self, generation, board, quality):
+        """Runs in its own background thread (see _trigger_eval_locked).
+        `board` is a private copy, so this never races the live game
+        board. Talks to the dedicated eval engine under self._eval_lock
+        only (never self._lock) for the duration of the actual engine
+        call, so a slow evaluation can never block a move; self._lock is
+        only reacquired briefly afterward, to publish the result."""
+        time_limit = EVAL_QUALITY_TIME_LIMITS[quality]
+        try:
+            with self._eval_lock:
+                engine = self._ensure_eval_engine()
+                info = engine.analyse(board, chess.engine.Limit(time=time_limit))
+            score = info["score"].pov(chess.WHITE)
+            mate = score.mate()
+            result = {"score_cp": None if mate is not None else score.score(), "mate": mate, "error": None}
+        except Exception as e:
+            result = {"score_cp": None, "mate": None, "error": str(e)}
+        with self._lock:
+            if generation != self._eval_generation:
+                return  # a newer position/quality has since superseded this result
+            self.eval = {"quality": quality, "pov": "white", "pending": False, **result}
+            self._bump_version_locked()
+
     def set_name(self, color, name):
         """Set (or clear) a side's display name. `color` is 'white' or
         'black'. `name` is shown in the board viewer and stamped onto
@@ -856,6 +1010,7 @@ class ChessGame:
                 "engine_levels": dict(self.engine_levels),
                 "engine_names": dict(self.engine_names),
                 "phone_a_friend": self._friend_summary_locked(),
+                "eval": dict(self.eval),
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
                 "move_log": list(self.move_log),
@@ -936,6 +1091,7 @@ class ChessGame:
             if self._status() == "in_progress" and self._current_player_type() == "engine":
                 engine_entry = self._play_engine_move_locked()
 
+            self._trigger_eval_locked()
             self._bump_version_locked()
             return player_entry, engine_entry
 

@@ -7,8 +7,10 @@ submit moves for either side. All requests/responses are JSON.
 from flask import Flask, Response, jsonify, request
 
 from game import (
+    DEFAULT_EVAL_QUALITY,
     DEFAULT_FRIEND_LIMITS,
     ENGINE_NAMES,
+    EVAL_QUALITIES,
     FRIEND_LEVELS,
     FRIEND_LIMIT_MAX,
     FRIEND_LIMIT_MIN,
@@ -18,6 +20,7 @@ from game import (
     LEVEL_MIN,
     WAIT_DEFAULT_TIMEOUT_SECONDS,
     WAIT_MAX_TIMEOUT_SECONDS,
+    describe_eval_qualities,
     describe_levels,
 )
 
@@ -103,7 +106,22 @@ API_DOC = {
                           "status, move log — including any chat attached "
                           "to a move — engine levels and engine choices, "
                           "player names, ...). This is also how to check "
-                          "whose turn it is — see the 'turn' field.",
+                          "whose turn it is — see the 'turn' field. "
+                          "'eval' is the eval bar's current assessment: "
+                          "{'quality', 'pov', 'score_cp', 'mate', "
+                          "'pending', 'error'} — 'score_cp' (centipawns, "
+                          "positive favors White) or 'mate' (moves to "
+                          "mate, positive means White mates, negative "
+                          "means Black mates) is set, never both; "
+                          "'pending' is true while a fresh evaluation for "
+                          "the current position is still being computed "
+                          "— 'score_cp'/'mate' hold the previous "
+                          "position's values in the meantime, so the bar "
+                          "doesn't flicker to neutral on every move (both "
+                          "are null right after a new game, before the "
+                          "first evaluation completes). See "
+                          "GET /api/eval-qualities and "
+                          "POST /api/game/eval-quality.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
                                       "Optional query param: from=e2",
         "POST /api/game/move": {
@@ -255,6 +273,29 @@ API_DOC = {
                             "Returns the updated "
                             "{'white': name_or_null, 'black': name_or_null}.",
         },
+        "GET /api/eval-qualities": "The eval bar's speed/accuracy "
+                                    "trade-off levels — each entry has "
+                                    "'id', 'label', and a plain-language "
+                                    "'description' of the trade-off, "
+                                    "meant to be shown directly in a UI. "
+                                    f"Default: '{DEFAULT_EVAL_QUALITY}'.",
+        "POST /api/game/eval-quality": {
+            "body": {"quality": f"one of: {', '.join(EVAL_QUALITIES)}"},
+            "description": "Change the eval bar's speed/accuracy "
+                            "trade-off (see GET /api/eval-qualities for "
+                            "what each level means). 'off' turns the eval "
+                            "bar off entirely — no extra Stockfish work "
+                            "is done. Sticky, like 'POST /api/game/level'/"
+                            "'POST /api/game/engine': applies from now on "
+                            "regardless of whether a game is running, and "
+                            "survives to the next game. The eval bar runs "
+                            "on its own dedicated Stockfish process, "
+                            "always at full strength, entirely separate "
+                            "from any engine playing a side or answering "
+                            "a phone-a-friend query — it is never affected "
+                            "by, and never affects, either. Returns "
+                            "{'eval_quality': quality}.",
+        },
     },
     "viewer": "A board viewer is served separately on port 5004. It shows "
               "the game live and also lets a person start a game or play "
@@ -400,6 +441,22 @@ def create_api_app(game):
     @app.get("/api/engine-levels")
     def get_engine_levels():
         return jsonify(describe_levels())
+
+    @app.get("/api/eval-qualities")
+    def get_eval_qualities():
+        return jsonify(describe_eval_qualities())
+
+    @app.post("/api/game/eval-quality")
+    def post_eval_quality():
+        body = request.get_json(silent=True) or {}
+        quality = body.get("quality")
+        if not quality:
+            return error(f"'quality' is required (one of: {', '.join(EVAL_QUALITIES)})")
+        try:
+            result = game.set_eval_quality(quality)
+        except GameError as e:
+            return error(str(e))
+        return jsonify(result)
 
     @app.post("/api/game/level")
     def post_level():

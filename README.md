@@ -166,6 +166,42 @@ here, since the `white_name`/`black_name` fields on `POST /api/game`
 only apply when that game is created. Works with or without a game
 running. Response: `{"player_names": {"white": "Deep Purple", "black": null}}`.
 
+### `GET /api/eval-qualities` — the eval bar's speed/accuracy trade-offs
+
+```json
+{
+  "default": "balanced",
+  "qualities": [
+    {"id": "off", "label": "Off", "description": "No eval bar. Stockfish does no extra work for it."},
+    {"id": "fast", "label": "Fast", "description": "Updates almost instantly. The assessment is shallow and can be noisy."},
+    {"id": "balanced", "label": "Balanced", "description": "A good default: updates quickly and is accurate enough for most positions."},
+    {"id": "deep", "label": "Deep", "description": "Slower to update, especially during a fast engine-vs-engine game. The most accurate assessment."}
+  ]
+}
+```
+
+The eval bar (see `state.eval` under `GET /api/game` below) is a live
+Stockfish read on who is winning, shown as a vertical bar in the board
+viewer. It runs on its own dedicated Stockfish process, always at full
+strength — entirely separate from any engine playing a side of the game
+or answering a `POST /api/game/phone-a-friend` query, so it never
+shares a Skill Level setting or slows down a move. `quality` (see
+`POST /api/game/eval-quality` below) trades update latency against
+accuracy; each entry's `description` is meant to be shown directly to a
+person choosing between them, not just read in this reference.
+
+### `POST /api/game/eval-quality` — set the eval bar's quality
+
+```json
+{"quality": "fast"}
+```
+
+`quality` is one of the `id`s from `GET /api/eval-qualities` above.
+`"off"` turns the eval bar off entirely — no extra Stockfish work is
+done. Sticky, like `POST /api/game/level`/`POST /api/game/engine`:
+applies from now on regardless of whether a game is running, and
+survives to the next game. Response: `{"eval_quality": "fast"}`.
+
 ### `GET /api/game` — current state
 
 This endpoint returns the board, the side to move, the game status, the
@@ -198,6 +234,7 @@ move.
       "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
     }
   },
+  "eval": {"quality": "balanced", "pov": "white", "score_cp": 31, "mate": null, "pending": false, "error": null},
   "fullmove_number": 1,
   "halfmove_clock": 0,
   "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"}]
@@ -220,6 +257,17 @@ on independent quotas, not a shared one. See
 `POST /api/game/phone-a-friend` below. Only an `"api-user"` side can
 use it, but the field is always present so anyone reading the state
 can see the budget.
+
+`eval` is the eval bar's current assessment of the position — see
+`GET /api/eval-qualities` and `POST /api/game/eval-quality` above.
+`score_cp` (centipawns, positive favors White) or `mate` (moves to
+mate; positive means White mates, negative means Black mates) is set,
+never both. `pending` is `true` while a fresh evaluation for the
+current position is still being computed — `score_cp`/`mate` hold the
+previous position's values in the meantime, so a reader doesn't see the
+bar snap to neutral on every move (both are `null` right after a new
+game, before the first evaluation completes). `error` is set only if
+the eval engine itself failed.
 
 Each `move_log` entry's `name` is that side's display name at the time
 of the move, or `null` if none was set (see `POST /api/game/name`
@@ -456,11 +504,26 @@ fades on its own after 60 seconds of no further move, and clears
 when a new game starts.
 
 The page's own `/game/start`, `/game/move`, `/game/legal-moves`,
-`/game/resign`, and `/game/chat` routes back these features. They
-call the same `ChessGame` object as the REST API (port 5003), so they
-enforce the same rules. They exist only so the page's own JS can act
-on the game from its own origin. `api.py` (port 5003) stays the
-reference for programmatic play.
+`/game/resign`, `/game/chat`, and `/game/eval-quality` routes back
+these features. They call the same `ChessGame` object as the REST API
+(port 5003), so they enforce the same rules. They exist only so the
+page's own JS can act on the game from its own origin. `api.py` (port
+5003) stays the reference for programmatic play.
+
+**Eval bar.** A vertical bar next to the board shows the eval bar's
+live Stockfish assessment — White's share of the bar grows as White's
+position improves, with a numeric read (`+1.3`, or `M4` for mate in 4)
+underneath. It runs on its own dedicated Stockfish process, entirely
+separate from any engine playing a side of the game or answering a
+phone-a-friend query (see `POST /api/game/eval-quality` above), so it
+never affects, or is affected by, actual gameplay. A control next to
+the board/piece style pickers lets a person choose the eval bar's
+speed/accuracy trade-off (see `GET /api/eval-qualities` above) —
+Off, Fast, Balanced (the default), or Deep — each with a plain-language
+description of the trade-off, so the choice does not require reading
+this reference. The setting is server-side and sticky, like engine
+level/choice, so it is shared by everyone watching, not a per-browser
+preference.
 
 **Appearance.** The page includes controls for the board style and the
 piece style.
