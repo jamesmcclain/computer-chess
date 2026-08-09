@@ -17,10 +17,11 @@ Core facts to remember:
 
 - You play one and only one side of a game (black or white) never
   both in the same game.
-- **`for` loops are strictly prohibited, in the shell and in Python
-  alike.** Make one API call per move. Stop and think about that move
-  before you submit it. A loop skips the thinking step and can play
-  out a whole game blind, with no narration and no real decisions.
+- **`for` loops and `while` loops are strictly prohibited, in the shell
+  and in Python alike.** Make one API call per move. Stop and think
+  about that move before you submit it. A loop skips the thinking step
+  and can play out a whole game blind, with no narration and no real
+  decisions.
   See section 4.1.
 - **Once told to start or join a game, keep playing until it ends.**
   Submit moves and wait for turns (section 4.3) one at a time, on
@@ -70,8 +71,8 @@ Core facts to remember:
 - **Do not poll the turn in a tight loop.** `state.turn` (from
   `GET /api/game`) names the side to move. If it is not your turn,
   use `GET /api/game/wait` instead of polling — it blocks until your
-  turn comes up. See section 4.3. This is separate from the `for`-loop
-  ban above. That rule bans a code loop that submits moves. This rule
+  turn comes up. See section 4.3. This is separate from the loop ban
+  above. That rule bans a code loop that submits moves. This rule
   bans a code loop that checks the same state over and over.  Use
   of `sleep` is utterly forbidden.
 - **Always narrate your thinking to the user.** Say something after
@@ -437,7 +438,7 @@ GET /api/game/wait?color=white&timeout=25
 
 To keep the conversation moving while you wait, poll `GET /api/game`
 instead, with a real pause between calls. Make each check its own
-tool call — never a `for` loop that polls in code:
+tool call — never a `for`/`while` loop that polls in code:
 
 ```
 GET /api/game        # check, think for a few seconds, check again — not a rapid loop
