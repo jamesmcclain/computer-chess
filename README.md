@@ -1,11 +1,13 @@
 # computer-chess
 
-computer-chess is a dockerized chess server. GNU Chess runs inside an
-Ubuntu container. A JSON REST API controls the game. A side is an API
-user (an outside caller that submits moves through the API), a web
-user (a person playing through the board viewer), or GNU Chess itself.
-A separate web page shows the current board, and also lets a person
-start a game or play a web-user side.
+computer-chess is a dockerized chess server. Two chess engines run
+inside an Ubuntu container: GNU Chess and Stockfish, equally
+supported everywhere an "engine" side is — either can play either
+color, alone or against each other. A JSON REST API controls the
+game. A side is an API user (an outside caller that submits moves
+through the API), a web user (a person playing through the board
+viewer), or an engine. A separate web page shows the current board,
+and also lets a person start a game or play a web-user side.
 
 Only one game is active at a time. A new game replaces the previous
 game. No endpoint uses authentication.
@@ -34,24 +36,31 @@ same reference as JSON.
 ### `POST /api/game` — start a new game
 
 ```json
-{"white": "api-user", "black": "engine", "level": 5}
+{"white": "api-user", "black": "engine", "level": 10}
 ```
 
 `white` and `black` are each one of three types: `"api-user"` (an API
-user that submits moves through this API), `"engine"` (GNU Chess), or
-`"web-user"` (a person playing through the board viewer on port 5004,
-by clicking the board). Every combination is supported, including two
-engines. When both sides are `"engine"`, the two GNU Chess instances
-play each other. This game needs no further calls. It plays itself
-out in the background, one paced move at a time, so it streams to the
-board viewer like any other game.
+user that submits moves through this API), `"engine"` (GNU Chess or
+Stockfish — see `engine` below), or `"web-user"` (a person playing
+through the board viewer on port 5004, by clicking the board). Every
+combination is supported, including two engines. When both sides are
+`"engine"`, the two engines play each other. This game needs no
+further calls. It plays itself out in the background, one paced move
+at a time, so it streams to the board viewer like any other game.
 
-`level` (optional, `1`-`10`, weakest to strongest) sets the difficulty
-for both sides at once. `white_level` and `black_level` (each optional,
-`1`-`10`) set one side's difficulty on its own, and win over `level`
-for that side. Use them to give the two engines in an engine-vs-engine
-game different strengths. Omit a level to keep its last value (default
-`5`). See `GET /api/engine-levels` and `POST /api/game/level` below.
+`level` (optional, `0`-`20`, weakest to strongest — Stockfish's own
+native "Skill Level" scale) sets the difficulty for both sides at
+once. `white_level` and `black_level` (each optional, `0`-`20`) set
+one side's difficulty on its own, and win over `level` for that side.
+Use them to give the two engines in an engine-vs-engine game different
+strengths. Omit a level to keep its last value (default `10`). See
+`GET /api/engine-levels` and `POST /api/game/level` below.
+
+`engine` (optional, `"gnuchess"` or `"stockfish"`) picks which engine
+plays both `"engine"` sides at once. `white_engine` and `black_engine`
+(each optional) pick one side's engine on its own, and win over
+`engine` for that side. Use them to pit GNU Chess against Stockfish.
+Omit an engine choice to keep its last value (default `"gnuchess"`).
 
 `white_name` and `black_name` (each optional, up to 40 characters) set
 that side's display name for this game. Names never carry over from a
@@ -59,15 +68,15 @@ previous game — every new game starts with neither side named; omit
 either to leave that side without a name. See `POST /api/game/name`
 below to set or change a name for a game already in progress.
 
-`friend_level5_limit` and `friend_level10_limit` (each optional,
+`friend_level10_limit` and `friend_level20_limit` (each optional,
 integers `0`-`50`, default `2` and `1` respectively) set this game's
-"phone a friend" budget: how many level-5 and level-10 engine hints
+"phone a friend" budget: how many level-10 and level-20 engine hints
 an `"api-user"` side may request over the course of the game. Like
 the name fields above, these are not sticky — every new game gets
 the defaults shown above unless overridden here, and usage always
 resets to zero. See `POST /api/game/phone-a-friend` below.
 
-If `white` is `"engine"` and `black` is not, GNU Chess plays its
+If `white` is `"engine"` and `black` is not, that engine plays its
 opening move immediately. The response returns this move as
 `engine_move`.
 
@@ -82,22 +91,27 @@ start on that square.
 {"moves": [{"uci": "e2e4", "san": "e4", "from": "e2", "to": "e4", "promotion": null}, ...], "count": 20}
 ```
 
-### `GET /api/engine-levels` — list of difficulty levels
+### `GET /api/engine-levels` — the difficulty scale and engine names
 
 ```json
-{"levels": [{"level": 1, "depth": 1, "max_time_seconds": 0.2}, ..., {"level": 10, "depth": 15, "max_time_seconds": 5.0}], "default": 5}
+{"min": 0, "max": 20, "default": 10, "engines": ["gnuchess", "stockfish"]}
 ```
 
-GNU Chess's UCI mode has no built-in skill-level or Elo option. The API
-approximates difficulty the standard way for UCI engines: it limits the
-search depth (`depth`), with a time limit (`max_time_seconds`) as a
-safety net. Level 1 plays weak, often-obvious moves in almost no time.
-Level 10 searches much deeper and can take up to the time limit.
+Both engines share one difficulty scale, `0` (weakest) to `20`
+(strongest) — Stockfish's own native "Skill Level" UCI option, applied
+to it directly. GNU Chess has no such option, so its difficulty is
+approximated the standard way for a UCI engine without one: the same
+0-20 level is used to derive a search-depth cap, with a time limit as
+a safety net rather than the primary lever. In practice, the same
+level plays noticeably stronger on Stockfish than on GNU Chess — the
+scale is shared so a level number always means "weaker" or "stronger"
+in the same direction on both engines, not that the two engines are
+strength-matched at the same number.
 
 ### `POST /api/game/level` — change the difficulty of an engine side
 
 ```json
-{"level": 8, "color": "black"}
+{"level": 16, "color": "black"}
 ```
 
 Difficulty is set per side, not per game, so an engine-vs-engine game
@@ -105,7 +119,20 @@ can have two different strengths. Omit `color` to set both sides at
 once. This is all that matters for a game with only one `"engine"`
 side. This endpoint works with or without a game in progress. The new
 level applies to that side's next move. Response:
-`{"levels": {"white": 5, "black": 8}}`.
+`{"levels": {"white": 10, "black": 16}}`.
+
+### `POST /api/game/engine` — change which engine plays an engine side
+
+```json
+{"engine": "stockfish", "color": "black"}
+```
+
+Which engine (`"gnuchess"` or `"stockfish"`) plays an `"engine"` side
+is set per side, not per game, so an engine-vs-engine game can pit the
+two engines against each other. Omit `color` to set both sides at
+once. This endpoint works with or without a game in progress. The new
+engine applies to that side's next move. Response:
+`{"engines": {"white": "gnuchess", "black": "stockfish"}}`.
 
 ### `POST /api/game/name` — set or clear a side's display name
 
@@ -145,11 +172,12 @@ move.
   "board": [[{"color": "white", "type": "P", "code": "wP"}, null, ...], ...],
   "players": {"white": "api-user", "black": "engine"},
   "player_names": {"white": "Deep Purple", "black": null},
-  "engine_levels": {"white": 5, "black": 5},
+  "engine_levels": {"white": 10, "black": 10},
+  "engine_names": {"white": "gnuchess", "black": "stockfish"},
   "phone_a_friend": {
-    "limits": {"level_5": 2, "level_10": 1},
-    "white": {"used": {"level_5": 0, "level_10": 0}, "remaining": {"level_5": 2, "level_10": 1}},
-    "black": {"used": {"level_5": 0, "level_10": 0}, "remaining": {"level_5": 2, "level_10": 1}}
+    "limits": {"level_10": 2, "level_20": 1},
+    "white": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
+    "black": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
   },
   "fullmove_number": 1,
   "halfmove_clock": 0,
@@ -161,6 +189,10 @@ move.
 `stalemate`, `draw_insufficient_material`, `draw_75_moves`,
 `draw_5fold_repetition`, `draw_claimable_50_moves`,
 `draw_claimable_threefold_repetition`, `resigned`.
+
+`engine_names` shows which engine (`"gnuchess"` or `"stockfish"`)
+plays each `"engine"` side — see `POST /api/game/engine` above. Its
+entry for a non-`"engine"` side has no meaning.
 
 `phone_a_friend` shows this game's hint budget (`limits`, set at
 `POST /api/game` time) and each side's usage/remaining count at each
@@ -207,7 +239,7 @@ started. A timed-out response looks the same as any other: check
 This endpoint accepts UCI notation (`e2e4`, `e7e8q` for promotion) or
 SAN (`e4`, `Nf3`, `O-O`). The move applies to the side with the current
 turn. The caller does not name the color, because only one side can
-move at a time. If it becomes GNU Chess's turn next, the server
+move at a time. If it becomes an engine's turn next, the server
 computes and applies its reply immediately.
 
 `chat` (optional, up to 240 characters, trimmed rather than rejected
@@ -230,7 +262,7 @@ there is no longer any ongoing advantage to protect.
 
 ```json
 {"move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"},
- "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine", "name": "GNU Chess"},
+ "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine", "name": "Stockfish"},
  "state": {...}}
 ```
 
@@ -238,34 +270,36 @@ This endpoint returns `400` for an illegal or unparseable move, for a
 move submitted during the engine's turn, or when no game is in
 progress.
 
-### `POST /api/game/phone-a-friend` — ask the engine for a move recommendation
+### `POST /api/game/phone-a-friend` — ask an engine for a move recommendation
 
 ```json
-{"level": 10}
+{"level": 20, "engine": "stockfish"}
 ```
 
-For the `"api-user"` side to move only. Asks GNU Chess what it would
+For the `"api-user"` side to move only. Asks an engine what it would
 play in the current position, without submitting that move: the board
 is unchanged, your turn does not end, and this is not a substitute for
 `POST /api/game/move` — you still submit your own move afterward,
 whether or not you take the suggestion.
 
-`level` is `5` or `10` — these are the only two tiers offered. Each has
-its own budget for the game, set at `POST /api/game` time
-(`friend_level5_limit`/`friend_level10_limit`, default `2` and `1`
+`level` is `10` or `20` — these are the only two tiers offered. Each
+has its own budget for the game, set at `POST /api/game` time
+(`friend_level10_limit`/`friend_level20_limit`, default `2` and `1`
 respectively) and tracked separately per side, so in a two-API-user
-game each caller gets their own budget.
+game each caller gets their own budget. `engine` (optional, `"gnuchess"`
+or `"stockfish"`) picks which engine to ask; defaults to `"gnuchess"`
+if omitted.
 
 ```json
-{"advice": {"level": 10, "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},
+{"advice": {"level": 20, "engine": "stockfish", "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},
  "state": {...}}
 ```
 
 Returns `400` if it is not your turn, your side is not `"api-user"`,
-`level` is not `5` or `10`, or you have no queries left at that level.
-Current budget and usage for both sides is always visible in
-`state.phone_a_friend` (see `GET /api/game` above), whether or not
-you've called this endpoint yet.
+`level` is not `10` or `20`, `engine` is not a valid engine name, or
+you have no queries left at that level. Current budget and usage for
+both sides is always visible in `state.phone_a_friend` (see
+`GET /api/game` above), whether or not you've called this endpoint yet.
 
 ### `POST /api/game/resign` — resign
 
@@ -287,9 +321,9 @@ PGN text (`Content-Type: application/x-chess-pgn`), not JSON, with a
 `Content-Disposition` header so a browser downloads it as a `.pgn`
 file rather than displaying it.
 
-Metadata (players, result, engine levels where relevant, and how the
-game ended) is in the PGN tag pairs at the top. Every move's `chat`
-(see `POST /api/game/move` above) and any private `reasoning`
+Metadata (players, result, engine names and levels where relevant, and
+how the game ended) is in the PGN tag pairs at the top. Every move's
+`chat` (see `POST /api/game/move` above) and any private `reasoning`
 recorded for it are folded in as a PGN comment on that move —
 `reasoning` is otherwise never returned by any endpoint, but once the
 game is over there is no ongoing advantage left to protect. For
@@ -301,11 +335,12 @@ example:
 [Date "2026.08.08"]
 [Round "-"]
 [White "API user"]
-[Black "GNU Chess"]
+[Black "Stockfish"]
 [Result "1-0"]
 [WhiteType "api-user"]
 [BlackType "engine"]
-[BlackEngineLevel "5"]
+[BlackEngine "stockfish"]
+[BlackEngineLevel "10"]
 [Termination "checkmate"]
 
 1. e4 {Chat: Good luck! / Reasoning: e4 grabs the center} e5 2. Qh5 Nc6
@@ -338,23 +373,24 @@ after a game finishes, the page shows a form to start one. A person
 picks a type for White and a type for Black:
 
 - `api-user` — moves come from the REST API (an agent, or curl).
-- `engine` — GNU Chess plays this side.
+- `engine` — GNU Chess or Stockfish plays this side (see below).
 - `web-user` — the person at this page plays this side, by clicking
   the board (see below).
 
-Each side that is `engine` gets its own difficulty dropdown, so an
-engine-vs-engine game can pit two different strengths against each
+Each side that is `engine` gets its own engine dropdown (GNU Chess or
+Stockfish) and its own difficulty dropdown, so an engine-vs-engine
+game can pit two different engines and/or strengths against each
 other. Whenever either side is set to `api-user`, the form also shows
-two "phone a friend" inputs — the level-10 and level-5 query limits
+two "phone a friend" inputs — the level-20 and level-10 query limits
 for this game (see `POST /api/game/phone-a-friend` above), defaulting
 to `1` and `2`. This form supports every combination the API supports:
 
 - Two API users.
-- An API user against the engine.
-- A web user against the engine.
+- An API user against an engine.
+- A web user against an engine.
 - A web user against an API user.
-- Two engines. This game plays itself out, one paced move at a time,
-  with no further input needed.
+- Two engines, the same one or different ones. This game plays itself
+  out, one paced move at a time, with no further input needed.
 
 **Playing as a web user.** When it is a `web-user` side's turn, the
 page lets that person click a piece. Then the person clicks a
@@ -362,15 +398,15 @@ highlighted square to move there. If the move is a promotion, the page
 shows a small picker for the piece to promote to.
 
 **Names and chat.** A players bar above the board shows each side's
-display name, type, and — for an `"engine"` side — its difficulty
-level, or — for an `"api-user"` side — its remaining "phone a friend"
-budget at each level. Set a name with `POST /api/game/name`. The side
-to move is highlighted. Any move that carried `chat` (see
-`POST /api/game/move`) shows up in a chat panel below the board, next
-to that move — there is no standalone chat channel. While it is a
-`web-user` side's own turn, an input box under the panel lets that
-person type a message; it is attached automatically to whichever move
-they submit next.
+display name, type, and — for an `"engine"` side — which engine it is
+and its difficulty level, or — for an `"api-user"` side — its
+remaining "phone a friend" budget at each level. Set a name with
+`POST /api/game/name`. The side to move is highlighted. Any move that
+carried `chat` (see `POST /api/game/move`) shows up in a chat panel
+below the board, next to that move — there is no standalone chat
+channel. While it is a `web-user` side's own turn, an input box under
+the panel lets that person type a message; it is attached
+automatically to whichever move they submit next.
 
 **Resign or restart.** While a game is in progress, a button appears
 above the board. If a person is behind either side (at least one
@@ -386,7 +422,7 @@ form.
 **Last-move arrow.** After a move, a semi-transparent arrow points
 from its start square to its end square, on top of the piece that
 moved. This happens for a move by any side, whether that side is a
-web user, an API user, or the engine. It updates on every new move,
+web user, an API user, or an engine. It updates on every new move,
 fades on its own after 60 seconds of no further move, and clears
 when a new game starts.
 
@@ -433,9 +469,14 @@ setup, because it is a flat 2D grid of images.
 
 - [`python-chess`](https://python-chess.readthedocs.io/) is the source
   of truth for the board, the move rules, and SAN/UCI parsing.
-- GNU Chess acts only as the `"engine"` side. The server talks to it
-  over the UCI protocol (`gnuchess --uci`) through `python-chess`'s
-  engine interface.
+- GNU Chess and Stockfish are the two `"engine"` choices (see `engine`
+  under `POST /api/game` above), equally supported and chosen per
+  side. The server talks to whichever is assigned to a side over the
+  UCI protocol (`gnuchess --uci` / `stockfish`) through `python-chess`'s
+  engine interface. Both engines share one 0-20 difficulty scale —
+  Stockfish's own native "Skill Level" option, applied directly to it;
+  approximated for GNU Chess via a derived search-depth cap, since it
+  has no such option of its own (see `GET /api/engine-levels` above).
 - `server.py` runs the REST API and the viewer as two Flask apps in one
   process. Both apps share one in-memory `ChessGame` object (`game.py`),
   guarded by a lock. The server needs no database, because it supports
@@ -444,10 +485,10 @@ setup, because it is a flat 2D grid of images.
 ## Files
 
 ```
-Dockerfile      Ubuntu, gnuchess, and the Python/Flask/python-chess image
+Dockerfile      Ubuntu, gnuchess, stockfish, and the Python/Flask/python-chess image
 run.sh          Convenience script to build and run the image
 server.py       Entry point: starts the API (port 5003) and the viewer (port 5004)
-game.py         Game state, rules, and the GNU Chess (UCI) integration
+game.py         Game state, rules, and the GNU Chess / Stockfish (UCI) integration
 api.py          REST API routes
 viewer.py       Read-only board viewer routes, page, and appearance catalogue
 static/chess/   Board-square and piece-set art for the viewer (see its README.md)
