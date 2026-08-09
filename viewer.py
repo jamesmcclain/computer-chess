@@ -188,7 +188,13 @@ PAGE = """<!doctype html>
   .start-row { display: flex; align-items: center; gap: 0.6rem; }
   .start-row label { color: #aaa; font-size: 0.82rem; width: 6rem; flex-shrink: 0; }
   .start-row select { font-size: 0.85rem; }
-  .friend-inputs { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+  .friend-inputs { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
+  .friend-engine-row { display: flex; flex-direction: column; gap: 0.25rem; }
+  .friend-engine-row .friend-inputs-tag.friend-engine-name {
+    color: #ccc; font-size: 0.78rem; font-weight: 600;
+  }
+  .friend-engine-pairs { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+  .friend-inputs-pair { display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
   .friend-inputs input[type="number"] {
     background: #1a1a1a; color: #eee; border: 1px solid #444; border-radius: 6px;
     padding: 0.25rem 0.4rem; font-size: 0.8rem; width: 3.2rem;
@@ -1357,9 +1363,21 @@ async function initStartPanel() {
     l10Tag.className = "friend-inputs-tag";
     l10Tag.textContent = "\\u00d7 L10";
     const engTag = document.createElement("span");
-    engTag.className = "friend-inputs-tag";
-    engTag.textContent = eng.label + ":";
-    friendEnginesEl.append(engTag, l20, l20Tag, l10, l10Tag);
+    engTag.className = "friend-inputs-tag friend-engine-name";
+    engTag.textContent = eng.label;
+    const l20Pair = document.createElement("span");
+    l20Pair.className = "friend-inputs-pair";
+    l20Pair.append(l20, l20Tag);
+    const l10Pair = document.createElement("span");
+    l10Pair.className = "friend-inputs-pair";
+    l10Pair.append(l10, l10Tag);
+    const pairsRow = document.createElement("div");
+    pairsRow.className = "friend-engine-pairs";
+    pairsRow.append(l20Pair, l10Pair);
+    const engineRow = document.createElement("div");
+    engineRow.className = "friend-engine-row";
+    engineRow.append(engTag, pairsRow);
+    friendEnginesEl.append(engineRow);
     friendInputs[eng.id] = { l20, l10 };
   });
 
