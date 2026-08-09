@@ -508,6 +508,7 @@ const FILES = "abcdefgh";
 
 const PLAYER_TYPES = [
   { id: "api-user", label: "API user" },
+  { id: "api-trainee", label: "API trainee" },
   { id: "engine", label: "Engine" },
   { id: "web-user", label: "Web user (you)" },
 ];
@@ -1081,7 +1082,7 @@ function sideLabel(state, color) {
     const engineName = state.engine_names && state.engine_names[color];
     const engineLabel = (ENGINE_TYPES.find(e => e.id === engineName) || {}).label || engineName || type;
     typeLabel = engineLabel + " (level " + state.engine_levels[color] + ")";
-  } else if (type === "api-user" && state.phone_a_friend) {
+  } else if ((type === "api-user" || type === "api-trainee") && state.phone_a_friend) {
     const f = state.phone_a_friend[color];
     if (f) {
       // Each engine has its own independent quota (see phone_a_friend()
@@ -1417,15 +1418,18 @@ async function initStartPanel() {
   // engine-vs-engine game can (and often should, to be an interesting
   // game to watch) pit two different engines and/or difficulties
   // against each other. The "phone a friend" budget only matters if at
-  // least one side will be 'api-user' — it's set once for the whole
-  // game and tracked separately per side (see
+  // least one side will be 'api-user'/'api-trainee' — it's set once for
+  // the whole game and tracked separately per side (see
   // POST /api/game/phone-a-friend).
+  function isApiUserLike(value) {
+    return value === "api-user" || value === "api-trainee";
+  }
   function refreshLevelVisibility() {
     whiteEngineRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
     blackEngineRow.style.display = blackSel.value === "engine" ? "flex" : "none";
     whiteLevelRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
     blackLevelRow.style.display = blackSel.value === "engine" ? "flex" : "none";
-    const anyApiUser = whiteSel.value === "api-user" || blackSel.value === "api-user";
+    const anyApiUser = isApiUserLike(whiteSel.value) || isApiUserLike(blackSel.value);
     friendRow.style.display = anyApiUser ? "flex" : "none";
   }
   whiteSel.addEventListener("change", refreshLevelVisibility);
@@ -1458,7 +1462,7 @@ async function initStartPanel() {
       body.black_level = parseInt(blackLevelSel.value, 10);
       body.black_engine = blackEngineSel.value;
     }
-    if (whiteSel.value === "api-user" || blackSel.value === "api-user") {
+    if (isApiUserLike(whiteSel.value) || isApiUserLike(blackSel.value)) {
       const friendLimits = {};
       Object.entries(friendInputs).forEach(([engId, { l20, l10 }]) => {
         const tiers = {};
@@ -1669,6 +1673,9 @@ def create_viewer_app(game):
             player_move, engine_move = game.make_move(move_str, chat=chat)
         except GameError as e:
             return _error(str(e))
+        if player_move.get("forfeited"):
+            return jsonify(forfeited=True, by=player_move["by"],
+                            reasons=player_move["reasons"], state=game.state())
         return jsonify(move=player_move, engine_move=engine_move, state=game.state())
 
     @app.get("/game/legal-moves")

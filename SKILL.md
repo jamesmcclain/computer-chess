@@ -29,13 +29,35 @@ Core facts to remember:
   when the game has ended (section 5).
 - **One game is active at a time.** A new game replaces any game in
   progress.
-- **A side has one of three types.** `"api-user"` (an outside caller
-  like you, sending moves through this API), `"web-user"` (a person
-  who clicks the board in the viewer), or `"engine"` (GNU Chess or
-  Stockfish — see `engine_names` in `state`). You always act as
-  `"api-user"`, whichever color you play. Your opponent can be any of
-  the three types — do not assume it is the engine, or, if it is,
-  which engine.
+- **A side has one of four types.** `"api-user"` (an outside caller
+  like you, sending moves through this API), `"api-trainee"` (exactly
+  like `"api-user"`, plus a strict process requirement — see below),
+  `"web-user"` (a person who clicks the board in the viewer), or
+  `"engine"` (GNU Chess or Stockfish — see `engine_names` in `state`).
+  You act as `"api-user"` by default, whichever color you play, unless
+  the user specifically asks you to play as `"api-trainee"` (or asks
+  for "trainee mode", "training mode", or similar). Your opponent can
+  be any of the four types — do not assume it is the engine, or, if it
+  is, which engine.
+- **If you are playing as `"api-trainee"`** (check `state.players` for
+  your color — do not assume; the user's request at game start is what
+  determines this, not anything you infer mid-game), every move has
+  two hard requirements, checked *before* the move is applied:
+  - You must call `POST /api/game/phone-a-friend` (any level, any
+    engine) at some point since your last move, unless you have zero
+    phone-a-friend budget left at every level and engine (check
+    `state.phone_a_friend` for your color). See section 4.5.
+  - You must include both `tactical_reasoning` and
+    `strategic_reasoning` on the move (this skill already requires
+    both on every move regardless of type — section 2 — so following
+    that existing rule already covers this one).
+  Skipping either forfeits the game immediately and irreversibly: the
+  server discards your submitted move without applying it, ends the
+  game with status `"forfeited"`, and your opponent wins. There is no
+  retry. If you are ever unsure whether you already phoned a friend
+  for the current move, call it again rather than risk skipping it —
+  an extra call only costs one unit of budget, where skipping it
+  costs the entire game.
 - **The API has no authentication and no seat reservation.** Whoever
   calls `POST /api/game/move` during a color's turn moves for that
   color. There is no login and no player ID. "Playing white" means
@@ -91,15 +113,20 @@ Content-Type: application/json
 {"white": "api-user", "black": "engine", "level": 10}
 ```
 
-- `white` and `black` are each `"api-user"`, `"web-user"`, or
-  `"engine"` (see the core facts above for what each means). Every
-  pairing is valid, including two engines — see the note below.
+- `white` and `black` are each `"api-user"`, `"api-trainee"`,
+  `"web-user"`, or `"engine"` (see the core facts above for what each
+  means). Every pairing is valid, including two engines — see the
+  note below.
 - If you are playing, pick your color and set the other side:
   - You vs. the engine, you as White: `{"white": "api-user", "black": "engine"}`
   - You vs. the engine, you as Black: `{"white": "engine", "black": "api-user"}`
   - You vs. another API user: `{"white": "api-user", "black": "api-user"}`
   - You vs. a person on the board viewer: set the other side to
     `"web-user"`, for example `{"white": "api-user", "black": "web-user"}`.
+  - You in "trainee mode" (only if the user asks for it by name — see
+    the core facts above): use `"api-trainee"` in place of
+    `"api-user"` for your own side, e.g.
+    `{"white": "api-trainee", "black": "engine"}`.
 - `level` (optional, `0`-`20`, weakest to strongest, default `10` —
   Stockfish's own native "Skill Level" scale) sets the difficulty for
   both sides at once. It matters only for a side that is `"engine"`.
@@ -384,6 +411,10 @@ Response:
   `"api-user"`/`"web-user"` turn. Read the `error` field, then correct
   your next call — for example, fetch legal moves again, or check the
   turn again.
+- If you are `"api-trainee"` and skipped a required phone-a-friend
+  call or reasoning field, the response is *not* this shape at all —
+  see section 5's forfeit bullet. That is not a `400`; it is a normal
+  `200`/`201`-style response reporting the game already ended.
 
 ### 4.3 Waiting for the other side
 
@@ -449,7 +480,16 @@ You can ask an engine for its move choice in the current position,
 without submitting that move. Use it as a hint for a hard decision,
 not as a substitute for choosing and submitting your own move
 (section 4.1, steps 4-5). It is available only to you, the
-`"api-user"` side, and only on your own turn.
+`"api-user"`/`"api-trainee"` side, and only on your own turn.
+
+**If you are playing as `"api-trainee"`,** this call is not optional:
+you must make it before every move for as long as you have any budget
+left at any level or engine (see the core facts above). Make it a
+standing step in your move loop for that game — check
+`state.phone_a_friend` for your color, and if any tier still shows
+budget, call this endpoint (any level, any engine satisfies the
+requirement) before `POST /api/game/move`. Skipping it when budget
+remains forfeits the game on the spot, with no warning first.
 
 ```
 POST /api/game/phone-a-friend
@@ -547,10 +587,19 @@ the move history yourself.
   | `draw_claimable_threefold_repetition`     | Draw claimable (threefold repetition)       |
   | `resigned`                                | A side resigned                             |
   | `aborted`                                 | Someone ended the game early, no winner (e.g. the board viewer's Restart button) |
+  | `forfeited`                               | An `"api-trainee"` side skipped a required phone-a-friend call or reasoning field — see the core facts above |
 
   `state.winner` is `"white"`, `"black"`, or `null` (a draw, an abort,
-  or no result yet). On checkmate or resignation, this field names the
-  winner directly — do not compute it yourself.
+  or no result yet). On checkmate, resignation, or forfeit, this field
+  names the winner directly — do not compute it yourself.
+- **If you are playing as `"api-trainee"` and your move gets
+  forfeited,** the response to `POST /api/game/move` looks different
+  from an ordinary move: `{"forfeited": true, "by": "white"|"black",
+  "reasons": [...], "state": {...}}` instead of `{"move", "engine_move",
+  "state"}`. Check for the `"forfeited"` key. This should never happen
+  if you follow the trainee requirements above on every move — if it
+  does, tell the user plainly that you forfeited and why (`reasons`),
+  don't obscure it.
 
 - Once `game_over` is `true`, `POST /api/game/move` starts to return
   `400` ("game is not in progress"). Use this only as backup, if you

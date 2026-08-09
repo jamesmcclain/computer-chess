@@ -85,20 +85,36 @@ EVAL_QUALITY_DESCRIPTIONS = {
 }
 DEFAULT_EVAL_QUALITY = "balanced"
 
-# A side is one of three types:
-#   "api-user" — moves come from the REST API (port 5003), e.g. an agent or curl.
-#   "web-user"  — moves come from a person clicking the board in the browser
-#                 viewer (port 5004).
-#   "engine"    — one of ENGINE_NAMES plays this side automatically; which
-#                 one is a separate, per-side choice (see engine_names).
-# "api-user" and "web-user" behave identically to the game itself (both are
-# just "a move shows up for this side eventually"); the distinction only
-# matters for display (the "by" field on a move, and which side the viewer's
-# click-to-move UI lets the current browser act on). Both sides can be
-# "engine" — the two engines then play each other automatically, one side
-# tuned to each side's own difficulty level and engine choice (see
-# ChessGame._start_autoplay).
-PLAYER_TYPES = ("api-user", "web-user", "engine")
+# A side is one of four types:
+#   "api-user"    — moves come from the REST API (port 5003), e.g. an agent or curl.
+#   "api-trainee" — exactly like "api-user" (same REST API), except every
+#                   move must be preceded by a phone-a-friend call (if any
+#                   budget is left — see FRIEND_LEVELS) and must carry both
+#                   `tactical_reasoning` and `strategic_reasoning`. Skipping
+#                   either forfeits the game on the spot — see
+#                   ChessGame.make_move()'s trainee-requirements check and
+#                   "forfeited" in FINISHED_STATUSES/TERMINATION_LABELS
+#                   below. A training aid to force the discipline of an
+#                   actual analysis process, not just "make a legal move".
+#   "web-user"    — moves come from a person clicking the board in the
+#                   browser viewer (port 5004).
+#   "engine"      — one of ENGINE_NAMES plays this side automatically; which
+#                   one is a separate, per-side choice (see engine_names).
+# "api-user", "api-trainee", and "web-user" all behave identically to the
+# game itself (each is just "a move shows up for this side eventually");
+# the distinction only matters for display (the "by" field on a move, and
+# which side the viewer's click-to-move UI lets the current browser act
+# on) and, for "api-trainee" only, the extra requirements above. Both
+# sides can be "engine" — the two engines then play each other
+# automatically, one side tuned to each side's own difficulty level and
+# engine choice (see ChessGame._start_autoplay).
+PLAYER_TYPES = ("api-user", "api-trainee", "web-user", "engine")
+
+# Player types that get to use phone-a-friend / must satisfy "api-trainee"'s
+# extra requirements the same way "api-user" does — i.e. every place that
+# used to check `mover_type == "api-user"` now checks
+# `mover_type in API_PLAYER_TYPES`.
+API_PLAYER_TYPES = ("api-user", "api-trainee")
 
 # Pause between moves when both sides are "engine" and the game is playing
 # itself out in the background (see ChessGame._start_autoplay). Purely for
@@ -138,6 +154,7 @@ FINISHED_STATUSES = (
     "draw_claimable_threefold_repetition",
     "resigned",
     "aborted",
+    "forfeited",
 )
 
 # transcript()'s PGN "Termination" tag — a standard supplementary PGN tag
@@ -154,6 +171,7 @@ TERMINATION_LABELS = {
     "draw_claimable_threefold_repetition": "draw (threefold repetition claimable)",
     "resigned": "resignation",
     "aborted": "aborted",
+    "forfeited": "forfeit",
 }
 
 # transcript()'s PGN White/Black tags fall back to this when a side has
@@ -161,7 +179,7 @@ TERMINATION_LABELS = {
 # the raw PLAYER_TYPES string. An "engine" side's fallback is looked up
 # from ENGINE_DISPLAY_NAMES instead (see transcript()), since which
 # engine it is matters more than the generic "engine" type string.
-TYPE_LABELS = {"api-user": "API user", "web-user": "Web user"}
+TYPE_LABELS = {"api-user": "API user", "api-trainee": "API trainee", "web-user": "Web user"}
 
 # Bounds for GET /api/game/wait's blocking wait — see ChessGame.wait_for_turn.
 # The cap keeps a single request from tying up a server thread indefinitely
@@ -343,13 +361,22 @@ class ChessGame:
                      "score_cp": None, "mate": None, "pending": False, "error": None}
 
         self.board = chess.Board()
-        self.white_type = None       # "api-user" | "web-user" | "engine"
-        self.black_type = None       # "api-user" | "web-user" | "engine"
+        self.white_type = None       # "api-user" | "api-trainee" | "web-user" | "engine"
+        self.black_type = None       # "api-user" | "api-trainee" | "web-user" | "engine"
         self.started = False
-        self.result_reason = None    # set to "resigned" on resignation
+        self.result_reason = None    # set to "resigned"/"forfeited" on resignation/forfeit
         self.resigned_by = None      # "white" | "black"
+        self.forfeited_by = None     # "white" | "black" — see make_move()'s trainee check
         self.move_log = []           # [{"ply","color","uci","san","by","name","chat","ts"}, ...]
         self.created_at = None
+        # Ply an "api-trainee" side last called phone_a_friend() for (see
+        # phone_a_friend() and make_move()'s trainee-requirements check) —
+        # {"white": ply, "black": ply}, absent for a color that hasn't
+        # called it yet this game. Compared against the *pending* ply
+        # (len(self.move_log) + 1, i.e. the move about to be made) rather
+        # than reset on every move, since phone_a_friend() itself doesn't
+        # touch move_log — the pending ply is what actually advances.
+        self._friend_called_for_ply = {}
         # Optional private notes an API user can attach to their own move
         # via make_move()'s `tactical_reasoning`/`strategic_reasoning`
         # arguments. Kept out of move_log and every other read endpoint
@@ -556,6 +583,8 @@ class ChessGame:
             self.started = True
             self.result_reason = None
             self.resigned_by = None
+            self.forfeited_by = None
+            self._friend_called_for_ply = {}
             self.move_log = []
             self._reasoning_log = []
             self._eval_log = []
@@ -702,6 +731,8 @@ class ChessGame:
     def _game_over_reason(self):
         if self.result_reason == "resigned":
             return "resigned"
+        if self.result_reason == "forfeited":
+            return "forfeited"
         if self.result_reason == "aborted":
             return "aborted"
         board = self.board
@@ -729,6 +760,8 @@ class ChessGame:
     def _winner(self):
         if self.result_reason == "resigned":
             return "black" if self.resigned_by == "white" else "white"
+        if self.result_reason == "forfeited":
+            return "black" if self.forfeited_by == "white" else "white"
         if self.board.is_checkmate():
             # side to move is the side that got mated
             return "black" if self.board.turn == chess.WHITE else "white"
@@ -762,6 +795,19 @@ class ChessGame:
             "white": side("white"),
             "black": side("black"),
         }
+
+    def _friend_queries_left_locked(self, color):
+        """Caller must hold self._lock. True if `color` has at least one
+        phone-a-friend query left at any (engine, level) combination —
+        used by make_move()'s 'api-trainee' requirements check to decide
+        whether that side owed a phone_a_friend() call before this move.
+        A side with every tier already exhausted (limit 0, or used up)
+        owes nothing — there's nothing left to call."""
+        return any(
+            _friend_remaining(self.friend_limits[name][tier], self.friend_used[color][name][tier]) != 0
+            for name in ENGINE_NAMES
+            for tier in FRIEND_LEVELS
+        )
 
     def _board_grid(self):
         """8x8 grid, row 0 = rank 8 (black's back rank) down to row 7 = rank 1,
@@ -1103,8 +1149,9 @@ class ChessGame:
 
     def make_move(self, move_str, chat=None, tactical_reasoning=None, strategic_reasoning=None):
         """Submit a move for whichever side is currently to move — works
-        the same whether that side is 'api-user' or 'web-user'; only
-        'engine' turns are rejected here (an engine moves itself).
+        the same whether that side is 'api-user', 'api-trainee', or
+        'web-user'; only 'engine' turns are rejected here (an engine
+        moves itself).
 
         `chat` (optional) is a short chat line attached to this move —
         it and this side's current display name (see set_name()) are
@@ -1113,18 +1160,34 @@ class ChessGame:
         call) sees them; there is no separate delivery step, and no
         standalone/banter channel — all chat rides along with a move.
 
-        `tactical_reasoning` and `strategic_reasoning` (both optional)
-        are private notes about why this move was chosen — the former
-        for concrete, move-local calculation (captures, checks, threats),
-        the latter for the longer-term plan behind it. Unlike `chat`,
-        neither is ever returned by this or any other method while the
-        game is in progress — both are kept in self._reasoning_log, which
-        no endpoint reads from until the game ends (see transcript() and
-        that attribute's comment in __init__).
+        `tactical_reasoning` and `strategic_reasoning` (both optional
+        for 'api-user'/'web-user', required for 'api-trainee' — see
+        below) are private notes about why this move was chosen — the
+        former for concrete, move-local calculation (captures, checks,
+        threats), the latter for the longer-term plan behind it. Unlike
+        `chat`, neither is ever returned by this or any other method
+        while the game is in progress — both are kept in
+        self._reasoning_log, which no endpoint reads from until the
+        game ends (see transcript() and that attribute's comment in
+        __init__).
 
-        Returns (player_move_entry, engine_entry_or_None) — the engine
-        entry is set if, after this move, it becomes an 'engine' side's
-        turn and that engine replies immediately."""
+        An 'api-trainee' side (see PLAYER_TYPES) must, for every move:
+        (1) have called phone_a_friend() at least once since its last
+        move, if it had any phone-a-friend budget left to call with
+        (see _friend_queries_left_locked), and (2) supply both
+        `tactical_reasoning` and `strategic_reasoning`. Failing either
+        forfeits the game immediately — status becomes "forfeited",
+        this side loses — and the submitted move is discarded entirely
+        (never parsed, never applied), the same way a resignation
+        doesn't submit a move. This is checked first, before the move
+        string is even parsed, so a trainee can't dodge the requirement
+        with an illegal or malformed move either. Returns
+        {"forfeited": True, "by", "reasons", "ts"} in that case instead
+        of a move entry — check for the "forfeited" key.
+
+        Returns (player_move_entry, engine_entry_or_None) on an ordinary
+        move — the engine entry is set if, after this move, it becomes
+        an 'engine' side's turn and that engine replies immediately."""
         with self._lock:
             if not self.started:
                 raise GameError("no game in progress; POST /api/game to start one")
@@ -1134,12 +1197,31 @@ class ChessGame:
             if mover_type == "engine":
                 raise GameError("it is the engine's turn; wait for its move")
 
-            move = self._parse_move(move_str)
             color = "white" if self.board.turn == chess.WHITE else "black"
+            pending_ply = len(self.move_log) + 1
+            clean_tactical = self._clean_text(tactical_reasoning, REASONING_MAX_LEN)
+            clean_strategic = self._clean_text(strategic_reasoning, REASONING_MAX_LEN)
+
+            if mover_type == "api-trainee":
+                violations = []
+                if self._friend_queries_left_locked(color) and \
+                        self._friend_called_for_ply.get(color) != pending_ply:
+                    violations.append("no phone-a-friend call before this move, "
+                                       "despite having queries left")
+                if clean_tactical is None or clean_strategic is None:
+                    violations.append("missing tactical_reasoning and/or strategic_reasoning")
+                if violations:
+                    self.result_reason = "forfeited"
+                    self.forfeited_by = color
+                    self._bump_version_locked()
+                    return {"forfeited": True, "by": color, "reasons": violations,
+                            "ts": time.time()}, None
+
+            move = self._parse_move(move_str)
             san = self.board.san(move)
             uci = move.uci()
             self.board.push(move)
-            ply = len(self.move_log) + 1
+            ply = pending_ply
             player_entry = {"ply": ply, "color": color, "uci": uci, "san": san,
                               "by": mover_type, "name": self.player_names.get(color),
                               "ts": time.time()}
@@ -1148,8 +1230,6 @@ class ChessGame:
                 player_entry["chat"] = clean_chat
             self.move_log.append(player_entry)
 
-            clean_tactical = self._clean_text(tactical_reasoning, REASONING_MAX_LEN)
-            clean_strategic = self._clean_text(strategic_reasoning, REASONING_MAX_LEN)
             if clean_tactical is not None or clean_strategic is not None:
                 self._reasoning_log.append({
                     "ply": ply, "color": color,
@@ -1169,24 +1249,28 @@ class ChessGame:
     def phone_a_friend(self, level, engine=None):
         """"Phone a friend": ask an engine for its recommended move in
         the current position, without submitting it. Only available to
-        the side to move when that side is 'api-user' — this is a hint
-        for a programmatic caller weighing a decision, not something a
-        'web-user' or the 'engine' side itself needs. `level` must be
-        one of FRIEND_LEVELS; each is budgeted separately, per side, per
-        engine, per game (see self.friend_limits / self.friend_used, set
-        at new_game() time) — GNU Chess hints and Stockfish hints draw on
-        independent quotas, not a shared one, so an 'api-user' side can
-        use both. `engine` (optional, one of ENGINE_NAMES) picks which
-        engine to ask; defaults to DEFAULT_ENGINE if omitted. Calling
-        this does not change the board, does not end your turn, and does
-        not count as your move — you still need to submit a move
-        yourself via make_move(), whether or not you take the
-        suggestion. Returns
+        the side to move when that side is 'api-user' or 'api-trainee'
+        — this is a hint for a programmatic caller weighing a decision,
+        not something a 'web-user' or the 'engine' side itself needs.
+        `level` must be one of FRIEND_LEVELS; each is budgeted
+        separately, per side, per engine, per game (see
+        self.friend_limits / self.friend_used, set at new_game() time)
+        — GNU Chess hints and Stockfish hints draw on independent
+        quotas, not a shared one, so a side can use both. `engine`
+        (optional, one of ENGINE_NAMES) picks which engine to ask;
+        defaults to DEFAULT_ENGINE if omitted. Calling this does not
+        change the board, does not end your turn, and does not count as
+        your move — you still need to submit a move yourself via
+        make_move(), whether or not you take the suggestion. For an
+        'api-trainee' side, a successful call here (any engine, any
+        level) satisfies that side's phone-a-friend requirement for the
+        move about to be made — see make_move()'s trainee-requirements
+        check. Returns
         {"level", "engine", "uci", "san", "color", "used", "limit", "remaining"}.
         Raises GameError if no game is in progress, it is not an
-        'api-user' side's turn, `level` is not a valid tier, `engine` is
-        not a valid engine name, or that side has no queries left at
-        that level for that engine."""
+        'api-user'/'api-trainee' side's turn, `level` is not a valid
+        tier, `engine` is not a valid engine name, or that side has no
+        queries left at that level for that engine."""
         if level not in FRIEND_LEVELS:
             raise GameError(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
         engine_name = self._validate_engine(engine) if engine is not None else DEFAULT_ENGINE
@@ -1196,8 +1280,10 @@ class ChessGame:
             if self._status() != "in_progress":
                 raise GameError(f"game is not in progress (status: {self._status()})")
             mover_type = self._current_player_type()
-            if mover_type != "api-user":
-                raise GameError("phone-a-friend is only available to the 'api-user' side to move")
+            if mover_type not in API_PLAYER_TYPES:
+                raise GameError(
+                    "phone-a-friend is only available to the 'api-user'/'api-trainee' side to move"
+                )
 
             color = "white" if self.board.turn == chess.WHITE else "black"
             used = self.friend_used[color][engine_name][level]
@@ -1222,6 +1308,8 @@ class ChessGame:
             uci = move.uci()
 
             self.friend_used[color][engine_name][level] = used + 1
+            if mover_type == "api-trainee":
+                self._friend_called_for_ply[color] = len(self.move_log) + 1
             self._bump_version_locked()
 
             return {
