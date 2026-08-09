@@ -98,11 +98,13 @@ Core facts to remember:
 - **Once the game ends, a PGN transcript is available.** It folds in
   every move's chat, tactical reasoning, strategic reasoning, and eval
   bar read. See section 5.1.
-- **`state.eval` is a live Stockfish read on who is winning** — the
-  board viewer's eval bar. It is purely informational, runs on its own
-  separate Stockfish process, and has nothing to do with your side or
-  turn — you do not need to read it to play correctly, and it is not a
-  substitute for your own analysis or `phone_a_friend`. See README.md.
+- **There is no live eval bar reading available to you.** The board
+  viewer has one (a running Stockfish assessment of who's winning), but
+  it is a spectator-only convenience and is deliberately never returned
+  by any JSON API response, including `GET /api/game` — you're expected
+  to judge the position yourself, or use `phone_a_friend` (section 4.5)
+  if you want an engine's opinion. A per-move read only shows up
+  after the game ends, folded into the PGN transcript (section 5.1).
 
 ## 1. Starting a new game
 
@@ -633,11 +635,10 @@ GET /api/game/transcript
   eval bar's own read of the position right after that move (if the
   eval bar was on, and a read completed before it was superseded)
   appear as a comment on that move. This is the only place reasoning
-  is ever exposed — once the game is over, no advantage is left to
-  protect. The eval was already public throughout the game (`state.eval`
-  above), just not previously attached to a specific move; it's given
-  as pawns from white's point of view (`+0.34`, `-1.20`) or `#N`/`#-N`
-  for a forced mate in N by white/black.
+  or an eval bar read is ever exposed to you — once the game is over,
+  no advantage is left to protect; it's given as pawns from white's
+  point of view (`+0.34`, `-1.20`) or `#N`/`#-N` for a forced mate in N
+  by white/black.
 - `400` means no game has started, or the current game is still in
   progress. This only works once `state.game_over` is `true`.
 - Use this endpoint when the user asks for a copy of the game, a way

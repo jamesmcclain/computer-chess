@@ -501,7 +501,7 @@ class ChessGame:
                  engine=None, white_engine=None, black_engine=None,
                  white_name=None, black_name=None,
                  friend_level10_limit=None, friend_level20_limit=None,
-                 engine_friend_limits=None):
+                 engine_friend_limits=None, include_eval=True):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
         ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
         (optional, 0-20, Stockfish's native "Skill Level" scale — see
@@ -636,7 +636,7 @@ class ChessGame:
 
             self._trigger_eval_locked(reset=True)
             self._bump_version_locked()
-            state = self.state()
+            state = self.state(include_eval=include_eval)
 
         if both_engines:
             # Neither side will ever call POST /api/game/move, so nothing
@@ -1053,7 +1053,7 @@ class ChessGame:
             self._bump_version_locked()
             return dict(self.player_names)
 
-    def wait_for_change(self, since_version, timeout=25):
+    def wait_for_change(self, since_version, timeout=25, include_eval=True):
         """Block until the game state has changed since `since_version`
         (or `timeout` seconds elapse), then return (state_dict, version).
 
@@ -1064,11 +1064,11 @@ class ChessGame:
         """
         with self._lock:
             if since_version != self._version:
-                return self.state(), self._version
+                return self.state(include_eval=include_eval), self._version
             self._change_cond.wait(timeout)
-            return self.state(), self._version
+            return self.state(include_eval=include_eval), self._version
 
-    def wait_for_turn(self, color, timeout=None):
+    def wait_for_turn(self, color, timeout=None, include_eval=False):
         """Block until it is `color`'s turn to move, the game ends, or
         `timeout` seconds elapse (default WAIT_DEFAULT_TIMEOUT_SECONDS,
         capped at WAIT_MAX_TIMEOUT_SECONDS) — whichever comes first.
@@ -1089,7 +1089,7 @@ class ChessGame:
         deadline = time.time() + timeout
 
         with self._lock:
-            state = self.state()
+            state = self.state(include_eval=include_eval)
             version = self._version
 
         while True:
@@ -1098,14 +1098,21 @@ class ChessGame:
             remaining = deadline - time.time()
             if remaining <= 0:
                 return state
-            state, version = self.wait_for_change(version, timeout=remaining)
+            state, version = self.wait_for_change(version, timeout=remaining, include_eval=include_eval)
 
-    def state(self):
+    def state(self, include_eval=True):
+        """`include_eval` gates the 'eval' field (the live Stockfish eval
+        bar reading). It defaults to True for the board viewer, but the
+        JSON API always calls this with include_eval=False: the eval bar
+        is a spectator/viewer convenience, and handing a live engine
+        assessment to an 'api-user'/'api-trainee' player would let them
+        lean on Stockfish for every move instead of reasoning it out
+        themselves."""
         with self._lock:
             board = self.board
             status = self._status()
             game_over = status not in ("not_started", "in_progress")
-            return {
+            result = {
                 "started": self.started,
                 "status": status,
                 "game_over": game_over,
@@ -1120,11 +1127,13 @@ class ChessGame:
                 "engine_levels": dict(self.engine_levels),
                 "engine_names": dict(self.engine_names),
                 "phone_a_friend": self._friend_summary_locked(),
-                "eval": dict(self.eval),
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
                 "move_log": list(self.move_log),
             }
+            if include_eval:
+                result["eval"] = dict(self.eval)
+            return result
 
     def legal_moves(self, from_square=None):
         with self._lock:
@@ -1323,7 +1332,7 @@ class ChessGame:
                 "remaining": _friend_remaining(limit, self.friend_used[color][engine_name][level]),
             }
 
-    def resign(self, player):
+    def resign(self, player, include_eval=True):
         player = (player or "").strip().lower()
         if player not in ("white", "black"):
             raise GameError("'player' must be 'white' or 'black'")
@@ -1335,9 +1344,9 @@ class ChessGame:
             self.result_reason = "resigned"
             self.resigned_by = player
             self._bump_version_locked()
-            return self.state()
+            return self.state(include_eval=include_eval)
 
-    def abort(self):
+    def abort(self, include_eval=True):
         """Immediately end the current game with no winner (status
         "aborted"), regardless of player types — unlike resign(), this
         doesn't need a 'player' side to act as, so it also works for a
@@ -1357,7 +1366,7 @@ class ChessGame:
                 raise GameError(f"game is not in progress (status: {self._status()})")
             self.result_reason = "aborted"
             self._bump_version_locked()
-            return self.state()
+            return self.state(include_eval=include_eval)
 
     def transcript(self):
         """Build a PGN (Portable Game Notation) transcript of the game

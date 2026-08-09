@@ -195,12 +195,13 @@ running. Response: `{"player_names": {"white": "Deep Purple", "black": null}}`.
 }
 ```
 
-The eval bar (see `state.eval` under `GET /api/game` below) is a live
-Stockfish read on who is winning, shown as a vertical bar in the board
-viewer. It runs on its own dedicated Stockfish process, always at full
-strength — entirely separate from any engine playing a side of the game
-or answering a `POST /api/game/phone-a-friend` query, so it never
-shares a Skill Level setting or slows down a move. `quality` (see
+The eval bar is a live Stockfish read on who is winning, shown as a
+vertical bar in the board viewer — it is not part of the JSON API's
+`GET /api/game` response (see below). It runs on its own dedicated
+Stockfish process, always at full strength — entirely separate from any
+engine playing a side of the game or answering a
+`POST /api/game/phone-a-friend` query, so it never shares a Skill Level
+setting or slows down a move. `quality` (see
 `POST /api/game/eval-quality` below) trades update latency against
 accuracy; each entry's `description` is meant to be shown directly to a
 person choosing between them, not just read in this reference.
@@ -249,7 +250,6 @@ move.
       "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
     }
   },
-  "eval": {"quality": "balanced", "pov": "white", "score_cp": 31, "mate": null, "pending": false, "error": null},
   "fullmove_number": 1,
   "halfmove_clock": 0,
   "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"}]
@@ -276,16 +276,12 @@ on independent quotas, not a shared one. See
 `"api-trainee"` side can use it, but the field is always present so
 anyone reading the state can see the budget.
 
-`eval` is the eval bar's current assessment of the position — see
-`GET /api/eval-qualities` and `POST /api/game/eval-quality` above.
-`score_cp` (centipawns, positive favors White) or `mate` (moves to
-mate; positive means White mates, negative means Black mates) is set,
-never both. `pending` is `true` while a fresh evaluation for the
-current position is still being computed — `score_cp`/`mate` hold the
-previous position's values in the meantime, so a reader doesn't see the
-bar snap to neutral on every move (both are `null` right after a new
-game, before the first evaluation completes). `error` is set only if
-the eval engine itself failed.
+There is no `eval` field in this JSON API response — the eval bar (see
+`GET /api/eval-qualities` and `POST /api/game/eval-quality` above) is a
+board-viewer-only convenience for spectators. It's deliberately kept
+out of `GET /api/game` and every other JSON API response so that an
+`"api-user"`/`"api-trainee"` player can't use it as a substitute for
+their own analysis of the position.
 
 Each `move_log` entry's `name` is that side's display name at the time
 of the move, or `null` if none was set (see `POST /api/game/name`
@@ -453,14 +449,14 @@ Metadata (players, result, engine names and levels where relevant, and
 how the game ended) is in the PGN tag pairs at the top. Every move's
 `chat` (see `POST /api/game/move` above), any private
 `tactical_reasoning`/`strategic_reasoning` recorded for it, and the
-eval bar's own read of the resulting position (`state.eval`, if the
-eval bar was on) are folded in as a PGN comment on that move — chat and
-reasoning are otherwise never returned by any endpoint, but once the
-game is over there is no ongoing advantage left to protect. The eval
-itself was already public/informational throughout the game (see
-`state.eval` below), so it's included whenever a move actually got a
-completed read; a move with the eval bar off, or a read still pending
-when a later move superseded it, has no `Eval:` comment. Scores are
+eval bar's own read of the resulting position (if the eval bar was on)
+are folded in as a PGN comment on that move — chat and reasoning are
+otherwise never returned by any endpoint, and the eval bar's live read
+is never returned by the JSON API at all (see `GET /api/game` above),
+but once the game is over there is no ongoing advantage left to
+protect, so the transcript includes whatever read was captured for
+each move at the time; a move with the eval bar off, or a read still
+pending when a later move superseded it, has no `Eval:` comment. Scores are
 pawns from white's point of view (`+0.34` = white better by about a
 third of a pawn, `-1.20` = black better by a bit over a pawn), or
 `#N`/`#-N` for a forced mate in N by white/black. For example:
