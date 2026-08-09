@@ -1053,7 +1053,7 @@ class ChessGame:
             self._bump_version_locked()
             return dict(self.player_names)
 
-    def wait_for_change(self, since_version, timeout=25, include_eval=False):
+    def wait_for_change(self, since_version, timeout=25, include_eval=False, include_log=True):
         """Block until the game state has changed since `since_version`
         (or `timeout` seconds elapse), then return (state_dict, version).
 
@@ -1064,11 +1064,11 @@ class ChessGame:
         """
         with self._lock:
             if since_version != self._version:
-                return self.state(include_eval=include_eval), self._version
+                return self.state(include_eval=include_eval, include_log=include_log), self._version
             self._change_cond.wait(timeout)
-            return self.state(include_eval=include_eval), self._version
+            return self.state(include_eval=include_eval, include_log=include_log), self._version
 
-    def wait_for_turn(self, color, timeout=None, include_eval=False):
+    def wait_for_turn(self, color, timeout=None, include_eval=False, include_log=False):
         """Block until it is `color`'s turn to move, the game ends, or
         `timeout` seconds elapse (default WAIT_DEFAULT_TIMEOUT_SECONDS,
         capped at WAIT_MAX_TIMEOUT_SECONDS) — whichever comes first.
@@ -1076,7 +1076,9 @@ class ChessGame:
         `state["turn"]` themselves, since a timeout looks the same as any
         other return here. Used by GET /api/game/wait so an API user can
         wait for their opponent's move with a single blocking call
-        instead of a poll loop.
+        instead of a poll loop. `include_log` defaults to False here
+        (unlike state()'s own default) since this is a per-move hot-loop
+        call — the caller gets `last_move` instead, which is O(1).
 
         Returns immediately, without blocking at all, if it is already
         `color`'s turn, the game has already ended, or no game has
@@ -1089,7 +1091,7 @@ class ChessGame:
         deadline = time.time() + timeout
 
         with self._lock:
-            state = self.state(include_eval=include_eval)
+            state = self.state(include_eval=include_eval, include_log=include_log)
             version = self._version
 
         while True:
@@ -1098,12 +1100,22 @@ class ChessGame:
             remaining = deadline - time.time()
             if remaining <= 0:
                 return state
-            state, version = self.wait_for_change(version, timeout=remaining, include_eval=include_eval)
+            state, version = self.wait_for_change(
+                version, timeout=remaining, include_eval=include_eval, include_log=include_log
+            )
 
-    def state(self, include_eval=False):
+    def state(self, include_eval=False, include_log=True):
         """`include_eval` gates the 'eval' field (the live Stockfish eval
         bar reading). Defaults to False; the board viewer, which shows the
-        eval bar to spectators, is the one caller that passes True."""
+        eval bar to spectators, is the one caller that passes True.
+
+        `include_log` gates the 'move_log' field. It grows one entry per
+        ply for the whole game, so it is the only field here that is not
+        O(1) in size — callers in a per-move hot loop (the REST API in
+        api.py) pass False and read 'last_move' instead, which is always
+        exactly one entry or None. The board viewer, which renders full
+        game history and chat, passes True (the default) to get the
+        whole log."""
         with self._lock:
             board = self.board
             status = self._status()
@@ -1125,8 +1137,10 @@ class ChessGame:
                 "phone_a_friend": self._friend_summary_locked(),
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
-                "move_log": list(self.move_log),
+                "last_move": self.move_log[-1] if self.move_log else None,
             }
+            if include_log:
+                result["move_log"] = list(self.move_log)
             if include_eval:
                 result["eval"] = dict(self.eval)
             return result

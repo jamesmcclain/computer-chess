@@ -404,7 +404,7 @@ def create_api_app(game):
     def get_state():
         if not game.is_started():
             return error("no game in progress; POST /api/game to start one", 404)
-        return jsonify(game.state())
+        return jsonify(game.state(include_log=False))
 
     @app.get("/api/game/legal-moves")
     def get_legal_moves():
@@ -434,8 +434,8 @@ def create_api_app(game):
             return error(str(e))
         if player_move.get("forfeited"):
             return jsonify(forfeited=True, by=player_move["by"],
-                            reasons=player_move["reasons"], state=game.state())
-        return jsonify(move=player_move, engine_move=engine_move, state=game.state())
+                            reasons=player_move["reasons"], state=game.state(include_log=False))
+        return jsonify(move=player_move, engine_move=engine_move, state=game.state(include_log=False))
 
     @app.post("/api/game/phone-a-friend")
     def post_phone_a_friend():
@@ -452,7 +452,7 @@ def create_api_app(game):
             advice = game.phone_a_friend(level, engine=engine_name)
         except GameError as e:
             return error(str(e))
-        return jsonify(advice=advice, state=game.state())
+        return jsonify(advice=advice, state=game.state(include_log=False))
 
     @app.get("/api/game/wait")
     def get_wait():
