@@ -1025,9 +1025,16 @@ function sideLabel(state, color) {
   } else if (type === "api-user" && state.phone_a_friend) {
     const f = state.phone_a_friend[color];
     if (f) {
-      typeLabel = type + " (friend: " + f.remaining.level_20 + "/" +
-        state.phone_a_friend.limits.level_20 + " L20, " +
-        f.remaining.level_10 + "/" + state.phone_a_friend.limits.level_10 + " L10 left)";
+      // Each engine has its own independent quota (see phone_a_friend()
+      // in game.py) — show both, e.g. "GNU Chess 1/1 L20, Stockfish 0/1 L20".
+      const perEngine = ENGINE_TYPES.map(e => {
+        const eng = f[e.id];
+        const limits = state.phone_a_friend.limits[e.id];
+        if (!eng || !limits) return null;
+        return e.label + " " + eng.remaining.level_20 + "/" + limits.level_20 + " L20, " +
+          eng.remaining.level_10 + "/" + limits.level_10 + " L10";
+      }).filter(Boolean).join("; ");
+      typeLabel = type + (perEngine ? " (friend: " + perEngine + ")" : "");
     }
   }
   return name ? name + " \\u2014 " + typeLabel : typeLabel;

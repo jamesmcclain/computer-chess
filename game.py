@@ -300,14 +300,20 @@ class ChessGame:
         # side's type ("api-user", "engine", ...) instead.
         self.player_names = {"white": None, "black": None}
         # "Phone a friend" budget — see FRIEND_LEVELS/phone_a_friend()
-        # below. Like player_names (and unlike engine_levels/engine_names),
-        # this is *not* sticky across games: it's a per-game resource
-        # budget, set fresh at each new_game() (defaulting to
-        # DEFAULT_FRIEND_LIMITS), and usage always resets to zero.
-        self.friend_limits = dict(DEFAULT_FRIEND_LIMITS)  # {10: N, 20: N}
+        # below. Quotas are tracked separately per engine (see
+        # ENGINE_NAMES), not pooled, so an 'api-user' side can draw on
+        # GNU Chess hints and Stockfish hints independently rather than
+        # the two competing for one shared budget. Like player_names
+        # (and unlike engine_levels/engine_names), this is *not* sticky
+        # across games: it's a per-game resource budget, set fresh at
+        # each new_game() (defaulting to DEFAULT_FRIEND_LIMITS for each
+        # engine), and usage always resets to zero.
+        self.friend_limits = {
+            name: dict(DEFAULT_FRIEND_LIMITS) for name in ENGINE_NAMES
+        }  # {"gnuchess": {10: N, 20: N}, "stockfish": {10: N, 20: N}}
         self.friend_used = {
-            "white": {10: 0, 20: 0},
-            "black": {10: 0, 20: 0},
+            "white": {name: {10: 0, 20: 0} for name in ENGINE_NAMES},
+            "black": {name: {10: 0, 20: 0} for name in ENGINE_NAMES},
         }
 
     # ---- engine lifecycle -------------------------------------------------
@@ -352,7 +358,9 @@ class ChessGame:
     def new_game(self, white, black, level=None, white_level=None, black_level=None,
                  engine=None, white_engine=None, black_engine=None,
                  white_name=None, black_name=None,
-                 friend_level10_limit=None, friend_level20_limit=None):
+                 friend_level10_limit=None, friend_level20_limit=None,
+                 gnuchess_friend_level10_limit=None, gnuchess_friend_level20_limit=None,
+                 stockfish_friend_level10_limit=None, stockfish_friend_level20_limit=None):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
         ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
         (optional, 0-20, Stockfish's native "Skill Level" scale — see
@@ -375,12 +383,21 @@ class ChessGame:
         `friend_level10_limit` and `friend_level20_limit` (each optional,
         integers, default DEFAULT_FRIEND_LIMITS) set this game's "phone a
         friend" budget — see phone_a_friend() — for the two FRIEND_LEVELS
-        tiers. Like the name settings, these are not sticky: every new
-        game gets the defaults unless overridden here, and usage always
-        resets to zero. Returns (state_dict, engine_move_or_None) —
-        engine_move is set if white is 'engine', since it then moves
-        immediately. If both sides are 'engine', the rest of the game
-        plays out in the background — see _start_autoplay."""
+        tiers, for both engines at once. `gnuchess_friend_level10_limit`/
+        `gnuchess_friend_level20_limit` and
+        `stockfish_friend_level10_limit`/`stockfish_friend_level20_limit`
+        (each optional) set one engine's budget at one tier specifically,
+        and win over the generic `friend_level10_limit`/
+        `friend_level20_limit` for that engine — quotas are tracked
+        separately per engine (see self.friend_limits), not pooled, so an
+        'api-user' side can draw on GNU Chess hints and Stockfish hints
+        independently. Like the name settings, none of these are sticky:
+        every new game gets the defaults unless overridden here, and
+        usage always resets to zero. Returns (state_dict,
+        engine_move_or_None) — engine_move is set if white is 'engine',
+        since it then moves immediately. If both sides are 'engine', the
+        rest of the game plays out in the background — see
+        _start_autoplay."""
         white = (white or "").strip().lower()
         black = (black or "").strip().lower()
         if white not in PLAYER_TYPES or black not in PLAYER_TYPES:
@@ -401,10 +418,18 @@ class ChessGame:
             white_name = self._clean_text(white_name, NAME_MAX_LEN)
         if black_name is not None:
             black_name = self._clean_text(black_name, NAME_MAX_LEN)
-        if friend_level10_limit is not None:
-            friend_level10_limit = self._validate_friend_limit(friend_level10_limit, FRIEND_LEVELS[0])
-        if friend_level20_limit is not None:
-            friend_level20_limit = self._validate_friend_limit(friend_level20_limit, FRIEND_LEVELS[1])
+        friend_overrides = {
+            "gnuchess": {10: gnuchess_friend_level10_limit, 20: gnuchess_friend_level20_limit},
+            "stockfish": {10: stockfish_friend_level10_limit, 20: stockfish_friend_level20_limit},
+        }
+        generic_friend_limits = {10: friend_level10_limit, 20: friend_level20_limit}
+        for tier, value in generic_friend_limits.items():
+            if value is not None:
+                generic_friend_limits[tier] = self._validate_friend_limit(value, tier)
+        for name in ENGINE_NAMES:
+            for tier, value in friend_overrides[name].items():
+                if value is not None:
+                    friend_overrides[name][tier] = self._validate_friend_limit(value, tier)
 
         with self._lock:
             self.board = chess.Board()
@@ -437,12 +462,21 @@ class ChessGame:
             # this game only, if given.
             self.player_names = {"white": white_name, "black": black_name}
             self.friend_limits = {
-                FRIEND_LEVELS[0]: friend_level10_limit if friend_level10_limit is not None else DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]],
-                FRIEND_LEVELS[1]: friend_level20_limit if friend_level20_limit is not None else DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]],
+                name: {
+                    tier: (
+                        friend_overrides[name][tier]
+                        if friend_overrides[name][tier] is not None
+                        else generic_friend_limits[tier]
+                        if generic_friend_limits[tier] is not None
+                        else DEFAULT_FRIEND_LIMITS[tier]
+                    )
+                    for tier in FRIEND_LEVELS
+                }
+                for name in ENGINE_NAMES
             }
             self.friend_used = {
-                "white": {FRIEND_LEVELS[0]: 0, FRIEND_LEVELS[1]: 0},
-                "black": {FRIEND_LEVELS[0]: 0, FRIEND_LEVELS[1]: 0},
+                "white": {name: {10: 0, 20: 0} for name in ENGINE_NAMES},
+                "black": {name: {10: 0, 20: 0} for name in ENGINE_NAMES},
             }
 
             both_engines = white == "engine" and black == "engine"
@@ -577,24 +611,27 @@ class ChessGame:
 
     def _friend_summary_locked(self):
         """Caller must hold self._lock. "Phone a friend" budget/usage for
-        the current game — see FRIEND_LEVELS/phone_a_friend(). Included in
-        state() so any reader (an API user checking their own budget, or
-        the board viewer's players bar) can see it without a dedicated
-        endpoint."""
-        lo, hi = FRIEND_LEVELS
+        the current game, broken out per engine (see ENGINE_NAMES) since
+        each engine's quota is tracked separately — see
+        FRIEND_LEVELS/phone_a_friend(). Included in state() so any
+        reader (an API user checking their own budget, or the board
+        viewer's players bar) can see it without a dedicated endpoint."""
+        def tiers(d):
+            return {f"level_{tier}": d[tier] for tier in FRIEND_LEVELS}
 
         def side(color):
-            used = self.friend_used[color]
-            limits = self.friend_limits
             return {
-                "used": {f"level_{lo}": used[lo], f"level_{hi}": used[hi]},
-                "remaining": {
-                    f"level_{lo}": max(0, limits[lo] - used[lo]),
-                    f"level_{hi}": max(0, limits[hi] - used[hi]),
-                },
+                name: {
+                    "used": tiers(self.friend_used[color][name]),
+                    "remaining": {
+                        f"level_{tier}": max(0, self.friend_limits[name][tier] - self.friend_used[color][name][tier])
+                        for tier in FRIEND_LEVELS
+                    },
+                }
+                for name in ENGINE_NAMES
             }
         return {
-            "limits": {f"level_{lo}": self.friend_limits[lo], f"level_{hi}": self.friend_limits[hi]},
+            "limits": {name: tiers(self.friend_limits[name]) for name in ENGINE_NAMES},
             "white": side("white"),
             "black": side("black"),
         }
@@ -892,18 +929,20 @@ class ChessGame:
         for a programmatic caller weighing a decision, not something a
         'web-user' or the 'engine' side itself needs. `level` must be
         one of FRIEND_LEVELS; each is budgeted separately, per side, per
-        game (see self.friend_limits / self.friend_used, set at
-        new_game() time). `engine` (optional, one of ENGINE_NAMES)
-        picks which engine to ask; defaults to DEFAULT_ENGINE if
-        omitted. Calling this does not change the board, does not end
-        your turn, and does not count as your move — you still need to
-        submit a move yourself via make_move(), whether or not you take
-        the suggestion. Returns
+        engine, per game (see self.friend_limits / self.friend_used, set
+        at new_game() time) — GNU Chess hints and Stockfish hints draw on
+        independent quotas, not a shared one, so an 'api-user' side can
+        use both. `engine` (optional, one of ENGINE_NAMES) picks which
+        engine to ask; defaults to DEFAULT_ENGINE if omitted. Calling
+        this does not change the board, does not end your turn, and does
+        not count as your move — you still need to submit a move
+        yourself via make_move(), whether or not you take the
+        suggestion. Returns
         {"level", "engine", "uci", "san", "color", "used", "limit", "remaining"}.
         Raises GameError if no game is in progress, it is not an
         'api-user' side's turn, `level` is not a valid tier, `engine` is
         not a valid engine name, or that side has no queries left at
-        that level."""
+        that level for that engine."""
         if level not in FRIEND_LEVELS:
             raise GameError(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
         engine_name = self._validate_engine(engine) if engine is not None else DEFAULT_ENGINE
@@ -917,11 +956,11 @@ class ChessGame:
                 raise GameError("phone-a-friend is only available to the 'api-user' side to move")
 
             color = "white" if self.board.turn == chess.WHITE else "black"
-            used = self.friend_used[color][level]
-            limit = self.friend_limits[level]
+            used = self.friend_used[color][engine_name][level]
+            limit = self.friend_limits[engine_name][level]
             if used >= limit:
                 raise GameError(
-                    f"phone-a-friend limit reached for level {level} "
+                    f"phone-a-friend limit reached for {engine_name} level {level} "
                     f"({used} of {limit} used this game)"
                 )
 
@@ -938,7 +977,7 @@ class ChessGame:
             san = self.board.san(move)
             uci = move.uci()
 
-            self.friend_used[color][level] = used + 1
+            self.friend_used[color][engine_name][level] = used + 1
             self._bump_version_locked()
 
             return {
@@ -947,9 +986,9 @@ class ChessGame:
                 "uci": uci,
                 "san": san,
                 "color": color,
-                "used": self.friend_used[color][level],
+                "used": self.friend_used[color][engine_name][level],
                 "limit": limit,
-                "remaining": max(0, limit - self.friend_used[color][level]),
+                "remaining": max(0, limit - self.friend_used[color][engine_name][level]),
             }
 
     def resign(self, player):

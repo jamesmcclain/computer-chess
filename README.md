@@ -71,10 +71,17 @@ below to set or change a name for a game already in progress.
 `friend_level10_limit` and `friend_level20_limit` (each optional,
 integers `0`-`50`, default `2` and `1` respectively) set this game's
 "phone a friend" budget: how many level-10 and level-20 engine hints
-an `"api-user"` side may request over the course of the game. Like
-the name fields above, these are not sticky — every new game gets
-the defaults shown above unless overridden here, and usage always
-resets to zero. See `POST /api/game/phone-a-friend` below.
+an `"api-user"` side may request over the course of the game, for
+*both* engines at once. Each engine's quota is tracked separately, not
+pooled — `gnuchess_friend_level10_limit`/`gnuchess_friend_level20_limit`
+and `stockfish_friend_level10_limit`/`stockfish_friend_level20_limit`
+(each optional) set one engine's budget at one tier specifically, and
+win over the generic fields for that engine — so an `"api-user"` side
+can be given, say, 5 GNU Chess hints and 1 Stockfish hint, independent
+of each other. Like the name fields above, none of these are sticky —
+every new game gets the defaults shown above unless overridden here,
+and usage always resets to zero. See `POST /api/game/phone-a-friend`
+below.
 
 If `white` is `"engine"` and `black` is not, that engine plays its
 opening move immediately. The response returns this move as
@@ -175,9 +182,15 @@ move.
   "engine_levels": {"white": 10, "black": 10},
   "engine_names": {"white": "gnuchess", "black": "stockfish"},
   "phone_a_friend": {
-    "limits": {"level_10": 2, "level_20": 1},
-    "white": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
-    "black": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
+    "limits": {"gnuchess": {"level_10": 2, "level_20": 1}, "stockfish": {"level_10": 2, "level_20": 1}},
+    "white": {
+      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
+      "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
+    },
+    "black": {
+      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
+      "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
+    }
   },
   "fullmove_number": 1,
   "halfmove_clock": 0,
@@ -196,9 +209,11 @@ entry for a non-`"engine"` side has no meaning.
 
 `phone_a_friend` shows this game's hint budget (`limits`, set at
 `POST /api/game` time) and each side's usage/remaining count at each
-tier — see `POST /api/game/phone-a-friend` below. Only an `"api-user"`
-side can use it, but the field is always present so anyone reading
-the state can see the budget.
+tier, broken out per engine — GNU Chess hints and Stockfish hints draw
+on independent quotas, not a shared one. See
+`POST /api/game/phone-a-friend` below. Only an `"api-user"` side can
+use it, but the field is always present so anyone reading the state
+can see the budget.
 
 Each `move_log` entry's `name` is that side's display name at the time
 of the move, or `null` if none was set (see `POST /api/game/name`
@@ -283,12 +298,15 @@ is unchanged, your turn does not end, and this is not a substitute for
 whether or not you take the suggestion.
 
 `level` is `10` or `20` — these are the only two tiers offered. Each
-has its own budget for the game, set at `POST /api/game` time
-(`friend_level10_limit`/`friend_level20_limit`, default `2` and `1`
+has its own budget for the game, per engine — set at `POST /api/game`
+time (`friend_level10_limit`/`friend_level20_limit` for both engines
+at once, or the per-engine `gnuchess_friend_level*_limit`/
+`stockfish_friend_level*_limit` fields; default `2` and `1`
 respectively) and tracked separately per side, so in a two-API-user
 game each caller gets their own budget. `engine` (optional, `"gnuchess"`
 or `"stockfish"`) picks which engine to ask; defaults to `"gnuchess"`
-if omitted.
+if omitted. GNU Chess hints and Stockfish hints draw on independent
+quotas, not a shared one — an `"api-user"` side can use both.
 
 ```json
 {"advice": {"level": 20, "engine": "stockfish", "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},
@@ -297,9 +315,10 @@ if omitted.
 
 Returns `400` if it is not your turn, your side is not `"api-user"`,
 `level` is not `10` or `20`, `engine` is not a valid engine name, or
-you have no queries left at that level. Current budget and usage for
-both sides is always visible in `state.phone_a_friend` (see
-`GET /api/game` above), whether or not you've called this endpoint yet.
+you have no queries left at that level for that engine. Current
+budget and usage for both sides, at both engines, is always visible in
+`state.phone_a_friend` (see `GET /api/game` above), whether or not
+you've called this endpoint yet.
 
 ### `POST /api/game/resign` — resign
 
@@ -382,8 +401,10 @@ Stockfish) and its own difficulty dropdown, so an engine-vs-engine
 game can pit two different engines and/or strengths against each
 other. Whenever either side is set to `api-user`, the form also shows
 two "phone a friend" inputs — the level-20 and level-10 query limits
-for this game (see `POST /api/game/phone-a-friend` above), defaulting
-to `1` and `2`. This form supports every combination the API supports:
+for this game, applied to both engines at once (see
+`POST /api/game/phone-a-friend` above; per-engine budgets can only be
+set independently through the REST API), defaulting to `1` and `2`.
+This form supports every combination the API supports:
 
 - Two API users.
 - An API user against an engine.
@@ -400,8 +421,8 @@ shows a small picker for the piece to promote to.
 **Names and chat.** A players bar above the board shows each side's
 display name, type, and — for an `"engine"` side — which engine it is
 and its difficulty level, or — for an `"api-user"` side — its
-remaining "phone a friend" budget at each level. Set a name with
-`POST /api/game/name`. The side to move is highlighted. Any move that
+remaining "phone a friend" budget at each level, per engine. Set a
+name with `POST /api/game/name`. The side to move is highlighted. Any move that
 carried `chat` (see `POST /api/game/move`) shows up in a chat panel
 below the board, next to that move — there is no standalone chat
 channel. While it is a `web-user` side's own turn, an input box under

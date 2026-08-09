@@ -70,7 +70,8 @@ Core facts to remember:
   always `"api-user"`.** This asks an engine for its move choice in
   the current position, without submitting that move or ending your
   turn. Each game gives you a small budget of level-20 and level-10
-  queries — 1 and 2 by default. See section 4.5.
+  queries — 1 and 2 by default — tracked separately for GNU Chess and
+  Stockfish, so you can draw on both. See section 4.5.
 - **Once the game ends, a PGN transcript is available.** It folds in
   every move's chat and reasoning. See section 5.1.
 
@@ -125,11 +126,18 @@ Content-Type: application/json
   game you did not start.
 - `friend_level10_limit`/`friend_level20_limit` (each optional,
   integers, default `2` and `1`) set this game's "phone a friend"
-  budget for whichever side ends up `"api-user"` — see section 4.5.
-  Like the name fields, these do not carry over: every new game gets
-  the defaults unless you set them here, and usage always starts at
-  zero. Raise them if the user wants more hints, or set either to `0`
-  to turn that tier off.
+  budget for whichever side ends up `"api-user"`, for both engines at
+  once — see section 4.5. Each engine's quota is tracked separately,
+  not pooled: `gnuchess_friend_level10_limit`/
+  `gnuchess_friend_level20_limit` and
+  `stockfish_friend_level10_limit`/`stockfish_friend_level20_limit`
+  (each optional) set one engine's budget specifically, winning over
+  the generic fields for that engine — use them if the user wants,
+  say, more Stockfish hints than GNU Chess hints. Like the name
+  fields, none of these carry over: every new game gets the defaults
+  unless you set them here, and usage always starts at zero. Raise
+  them if the user wants more hints, or set any to `0` to turn that
+  tier off for that engine.
 - **Two engines can play each other, for a user who wants to watch
   instead of play.** Set both `white` and `black` to `"engine"`, with
   different `white_level`/`black_level` if you want. Neither side
@@ -441,9 +449,14 @@ Content-Type: application/json
   hard-to-read position. Level 10 is enough for a routine check.
 - `engine` (optional, `"gnuchess"` or `"stockfish"`, default
   `"gnuchess"`) picks which engine to ask.
-- Each level has its own budget for the whole game, set at game start
-  (`friend_level10_limit`/`friend_level20_limit`, section 1 — default
-  `2` for level 10, `1` for level 20). Each side has its own budget,
+- Each level has its own budget for the whole game, per engine, set at
+  game start (`friend_level10_limit`/`friend_level20_limit` for both
+  engines at once, or the per-engine
+  `gnuchess_friend_level*_limit`/`stockfish_friend_level*_limit`
+  fields, section 1 — default `2` for level 10, `1` for level 20).
+  GNU Chess hints and Stockfish hints draw on independent quotas, not
+  a shared one — asking GNU Chess for a hint does not use up your
+  Stockfish budget, and vice versa. Each side has its own budget too,
   so in a two-`"api-user"` game your budget does not depend on your
   opponent's.
 - Calling this does **not** change the board, end your turn, or count
@@ -466,13 +479,19 @@ Response:
   total, and what remains.
 - `state` is the full, current game state — unchanged by this call,
   except `state.phone_a_friend`. That field always shows both sides'
-  budget and usage at both levels, whether or not you have called
-  this endpoint yet:
+  budget and usage at both levels, broken out per engine, whether or
+  not you have called this endpoint yet:
   ```json
   "phone_a_friend": {
-    "limits": {"level_10": 2, "level_20": 1},
-    "white": {"used": {"level_10": 0, "level_20": 1}, "remaining": {"level_10": 2, "level_20": 0}},
-    "black": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
+    "limits": {"gnuchess": {"level_10": 2, "level_20": 1}, "stockfish": {"level_10": 2, "level_20": 1}},
+    "white": {
+      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
+      "stockfish": {"used": {"level_10": 0, "level_20": 1}, "remaining": {"level_10": 2, "level_20": 0}}
+    },
+    "black": {
+      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
+      "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
+    }
   }
   ```
 - `400` means one of these:
@@ -481,11 +500,11 @@ Response:
     always `"api-user"`)
   - `level` was not `10` or `20`
   - `engine` was not a valid engine name
-  - you had no queries left at that level
+  - you had no queries left at that level for that engine
 
-  Read the `error` field. If you are out of budget at one level, try
-  the other level, if you still have queries there, or decide on your
-  own.
+  Read the `error` field. If you are out of budget at one level for
+  one engine, try the other level, the other engine (if you still have
+  queries there), or decide on your own.
 - Using this is optional. Call it only when it will truly help, in a
   hard or unclear position — not on every move, since your budget is
   small by design. When you use it, mention to the user that you
