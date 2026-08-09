@@ -21,8 +21,7 @@ Core facts to remember:
   and in Python alike.** Make one API call per move. Stop and think
   about that move before you submit it. A loop skips the thinking step
   and can play out a whole game blind, with no narration and no real
-  decisions.
-  See section 4.1.
+  decisions. See section 4.1.
 - **Once told to start or join a game, keep playing until it ends.**
   Submit moves and wait for turns (section 4.3) one at a time, on
   your own, without a stop for user input between moves. Stop only if
@@ -72,9 +71,9 @@ Core facts to remember:
   `GET /api/game`) names the side to move. If it is not your turn,
   use `GET /api/game/wait` instead of polling — it blocks until your
   turn comes up. See section 4.3. This is separate from the loop ban
-  above. That rule bans a code loop that submits moves. This rule
-  bans a code loop that checks the same state over and over.  Use
-  of `sleep` is utterly forbidden.
+  above: that rule bans a code loop that submits moves; this rule bans
+  a code loop that checks the same state over and over. Use of `sleep`
+  is utterly forbidden.
 - **Always narrate your thinking to the user.** Say something after
   you see an opponent's move, and again before you submit your own
   move. Section 4.1 gives the exact points to do this at. This is
@@ -90,12 +89,12 @@ Core facts to remember:
   `tactical_reasoning` and `strategic_reasoning` are where your
   analysis goes — they stay private while the game is in progress.
   Display name (also in section 2) stays optional.
-- **You can "phone a friend" for a move recommendation, since you are
-  always `"api-user"`.** This asks an engine for its move choice in
-  the current position, without submitting that move or ending your
-  turn. Each game gives you a small budget of level-20 and level-10
-  queries — 1 and 2 by default — tracked separately for GNU Chess and
-  Stockfish, so you can draw on both. See section 4.5.
+- **You can "phone a friend" for a move recommendation** (as
+  `"api-user"` or `"api-trainee"`). This asks an engine for its move
+  choice in the current position, without submitting that move or
+  ending your turn. Each game gives you a small budget of level-20 and
+  level-10 queries — 1 and 2 by default — tracked separately for GNU
+  Chess and Stockfish, so you can draw on both. See section 4.5.
 - **Once the game ends, a PGN transcript is available.** It folds in
   every move's chat, tactical reasoning, strategic reasoning, and eval
   bar read. See section 5.1.
@@ -404,9 +403,9 @@ Response:
   carries `player_names`: `{"white": name_or_null, "black": name_or_null}`
   (section 2).
 - `400` means the move was illegal or malformed, or it was not an
-  `"api-user"`/`"web-user"` turn. Read the `error` field, then correct
-  your next call — for example, fetch legal moves again, or check the
-  turn again.
+  `"api-user"`/`"api-trainee"`/`"web-user"` turn. Read the `error`
+  field, then correct your next call — for example, fetch legal moves
+  again, or check the turn again.
 - If you are `"api-trainee"` and skipped a required phone-a-friend
   call or reasoning field, the response is *not* this shape at all —
   see section 5's forfeit bullet. That is not a `400`; it is a normal
@@ -547,8 +546,7 @@ Response:
   ```
 - `400` means one of these:
   - it was not your turn
-  - your side was not `"api-user"` (this will not happen — you are
-    always `"api-user"`)
+  - your side was not `"api-user"`/`"api-trainee"`
   - `level` was not `10` or `20`
   - `engine` was not a valid engine name
   - you had no queries left at that level for that engine
