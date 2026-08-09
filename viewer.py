@@ -1572,7 +1572,7 @@ def create_viewer_app(game):
         anyone who'd rather poll than stream."""
         if not game.is_started():
             return jsonify({"started": False})
-        return jsonify(game.state())
+        return jsonify(game.state(include_eval=True))
 
     @app.get("/events")
     def events():
@@ -1583,7 +1583,7 @@ def create_viewer_app(game):
         def generate():
             version = -1  # guarantees the first wait_for_change() returns immediately
             while True:
-                payload, version = game.wait_for_change(version, timeout=20)
+                payload, version = game.wait_for_change(version, timeout=20, include_eval=True)
                 yield f"data: {json.dumps(payload)}\n\n"
 
         return Response(
@@ -1656,7 +1656,7 @@ def create_viewer_app(game):
                 white, black, level=level, white_level=white_level, black_level=black_level,
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
-                engine_friend_limits=engine_friend_limits,
+                engine_friend_limits=engine_friend_limits, include_eval=True,
             )
         except GameError as e:
             return _error(str(e))
@@ -1675,8 +1675,8 @@ def create_viewer_app(game):
             return _error(str(e))
         if player_move.get("forfeited"):
             return jsonify(forfeited=True, by=player_move["by"],
-                            reasons=player_move["reasons"], state=game.state())
-        return jsonify(move=player_move, engine_move=engine_move, state=game.state())
+                            reasons=player_move["reasons"], state=game.state(include_eval=True))
+        return jsonify(move=player_move, engine_move=engine_move, state=game.state(include_eval=True))
 
     @app.get("/game/legal-moves")
     def game_legal_moves():
@@ -1698,7 +1698,7 @@ def create_viewer_app(game):
         body = request.get_json(silent=True) or {}
         player = body.get("player")
         try:
-            state = game.resign(player)
+            state = game.resign(player, include_eval=True)
         except GameError as e:
             return _error(str(e))
         return jsonify(state=state)
@@ -1712,7 +1712,7 @@ def create_viewer_app(game):
         engine-vs-engine match actually stops instead of continuing to
         play while the new-game form is filled out."""
         try:
-            state = game.abort()
+            state = game.abort(include_eval=True)
         except GameError as e:
             return _error(str(e))
         return jsonify(state=state)

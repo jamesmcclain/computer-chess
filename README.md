@@ -278,10 +278,7 @@ anyone reading the state can see the budget.
 
 There is no `eval` field in this JSON API response — the eval bar (see
 `GET /api/eval-qualities` and `POST /api/game/eval-quality` above) is a
-board-viewer-only convenience for spectators. It's deliberately kept
-out of `GET /api/game` and every other JSON API response so that an
-`"api-user"`/`"api-trainee"` player can't use it as a substitute for
-their own analysis of the position.
+board-viewer-only feature for spectators.
 
 Each `move_log` entry's `name` is that side's display name at the time
 of the move, or `null` if none was set (see `POST /api/game/name`

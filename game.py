@@ -501,7 +501,7 @@ class ChessGame:
                  engine=None, white_engine=None, black_engine=None,
                  white_name=None, black_name=None,
                  friend_level10_limit=None, friend_level20_limit=None,
-                 engine_friend_limits=None, include_eval=True):
+                 engine_friend_limits=None, include_eval=False):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
         ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
         (optional, 0-20, Stockfish's native "Skill Level" scale — see
@@ -1053,7 +1053,7 @@ class ChessGame:
             self._bump_version_locked()
             return dict(self.player_names)
 
-    def wait_for_change(self, since_version, timeout=25, include_eval=True):
+    def wait_for_change(self, since_version, timeout=25, include_eval=False):
         """Block until the game state has changed since `since_version`
         (or `timeout` seconds elapse), then return (state_dict, version).
 
@@ -1100,14 +1100,10 @@ class ChessGame:
                 return state
             state, version = self.wait_for_change(version, timeout=remaining, include_eval=include_eval)
 
-    def state(self, include_eval=True):
+    def state(self, include_eval=False):
         """`include_eval` gates the 'eval' field (the live Stockfish eval
-        bar reading). It defaults to True for the board viewer, but the
-        JSON API always calls this with include_eval=False: the eval bar
-        is a spectator/viewer convenience, and handing a live engine
-        assessment to an 'api-user'/'api-trainee' player would let them
-        lean on Stockfish for every move instead of reasoning it out
-        themselves."""
+        bar reading). Defaults to False; the board viewer, which shows the
+        eval bar to spectators, is the one caller that passes True."""
         with self._lock:
             board = self.board
             status = self._status()
@@ -1332,7 +1328,7 @@ class ChessGame:
                 "remaining": _friend_remaining(limit, self.friend_used[color][engine_name][level]),
             }
 
-    def resign(self, player, include_eval=True):
+    def resign(self, player, include_eval=False):
         player = (player or "").strip().lower()
         if player not in ("white", "black"):
             raise GameError("'player' must be 'white' or 'black'")
@@ -1346,7 +1342,7 @@ class ChessGame:
             self._bump_version_locked()
             return self.state(include_eval=include_eval)
 
-    def abort(self, include_eval=True):
+    def abort(self, include_eval=False):
         """Immediately end the current game with no winner (status
         "aborted"), regardless of player types — unlike resign(), this
         doesn't need a 'player' side to act as, so it also works for a

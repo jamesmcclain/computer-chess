@@ -119,17 +119,10 @@ API_DOC = {
                           "status, move log — including any chat attached "
                           "to a move — engine levels and engine choices, "
                           "player names, ...). This is also how to check "
-                          "whose turn it is — see the 'turn' field. "
-                          "There is no 'eval' field here (unlike the board "
-                          "viewer's own state) — the JSON API never hands "
-                          "an 'api-user'/'api-trainee' player the live "
-                          "Stockfish eval bar reading for the position "
-                          "they're about to move in, so you can't lean on "
-                          "it instead of reasoning the position out "
-                          "yourself. See GET /api/eval-qualities and "
-                          "POST /api/game/eval-quality to control the "
-                          "(viewer-only) eval bar without seeing its "
-                          "reads.",
+                          "whose turn it is — see the 'turn' field. See "
+                          "GET /api/eval-qualities and "
+                          "POST /api/game/eval-quality for the eval bar's "
+                          "own settings.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
                                       "Optional query param: from=e2",
         "POST /api/game/move": {
@@ -401,7 +394,7 @@ def create_api_app(game):
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 white_name=white_name, black_name=black_name,
                 friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
-                engine_friend_limits=engine_friend_limits, include_eval=False,
+                engine_friend_limits=engine_friend_limits,
             )
         except GameError as e:
             return error(str(e))
@@ -411,7 +404,7 @@ def create_api_app(game):
     def get_state():
         if not game.is_started():
             return error("no game in progress; POST /api/game to start one", 404)
-        return jsonify(game.state(include_eval=False))
+        return jsonify(game.state())
 
     @app.get("/api/game/legal-moves")
     def get_legal_moves():
@@ -441,8 +434,8 @@ def create_api_app(game):
             return error(str(e))
         if player_move.get("forfeited"):
             return jsonify(forfeited=True, by=player_move["by"],
-                            reasons=player_move["reasons"], state=game.state(include_eval=False))
-        return jsonify(move=player_move, engine_move=engine_move, state=game.state(include_eval=False))
+                            reasons=player_move["reasons"], state=game.state())
+        return jsonify(move=player_move, engine_move=engine_move, state=game.state())
 
     @app.post("/api/game/phone-a-friend")
     def post_phone_a_friend():
@@ -459,7 +452,7 @@ def create_api_app(game):
             advice = game.phone_a_friend(level, engine=engine_name)
         except GameError as e:
             return error(str(e))
-        return jsonify(advice=advice, state=game.state(include_eval=False))
+        return jsonify(advice=advice, state=game.state())
 
     @app.get("/api/game/wait")
     def get_wait():
@@ -476,7 +469,7 @@ def create_api_app(game):
         body = request.get_json(silent=True) or {}
         player = body.get("player")
         try:
-            state = game.resign(player, include_eval=False)
+            state = game.resign(player)
         except GameError as e:
             return error(str(e))
         return jsonify(state=state)
@@ -484,7 +477,7 @@ def create_api_app(game):
     @app.post("/api/game/abort")
     def post_abort():
         try:
-            state = game.abort(include_eval=False)
+            state = game.abort()
         except GameError as e:
             return error(str(e))
         return jsonify(state=state)

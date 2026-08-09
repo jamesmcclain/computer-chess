@@ -98,13 +98,6 @@ Core facts to remember:
 - **Once the game ends, a PGN transcript is available.** It folds in
   every move's chat, tactical reasoning, strategic reasoning, and eval
   bar read. See section 5.1.
-- **There is no live eval bar reading available to you.** The board
-  viewer has one (a running Stockfish assessment of who's winning), but
-  it is a spectator-only convenience and is deliberately never returned
-  by any JSON API response, including `GET /api/game` — you're expected
-  to judge the position yourself, or use `phone_a_friend` (section 4.5)
-  if you want an engine's opinion. A per-move read only shows up
-  after the game ends, folded into the PGN transcript (section 5.1).
 
 ## 1. Starting a new game
 
