@@ -330,6 +330,12 @@ PAGE = """<!doctype html>
     background: #1a1a1a; border: 1px solid #5a3a3a; color: #d99;
   }
   #game-control-btn:hover { background: #2a1a1a; }
+  #resign-both-row { display: none; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .resign-side-btn {
+    all: unset; cursor: pointer; font-size: 0.75rem; padding: 0.3rem 0.8rem;
+    border-radius: 999px; background: #1a1a1a; border: 1px solid #5a3a3a; color: #d99;
+  }
+  .resign-side-btn:hover { background: #2a1a1a; }
 
   /* ---- last-move arrow ----------------------------------------------------
      A semi-transparent arrow drawn from a moved piece's old square to its
@@ -472,6 +478,10 @@ PAGE = """<!doctype html>
   </div>
 
   <button id="game-control-btn"></button>
+  <span id="resign-both-row" style="display:none;">
+    <button id="resign-white-btn" class="resign-side-btn">Resign white</button>
+    <button id="resign-black-btn" class="resign-side-btn">Resign black</button>
+  </span>
 
   <div id="board-row">
     <div id="eval-bar-wrap" title="">
@@ -522,6 +532,9 @@ const chatLogEl = document.getElementById("chat-log");
 const chatInputRowEl = document.getElementById("chat-input-row");
 const chatInputEl = document.getElementById("chat-input");
 const gameControlBtnEl = document.getElementById("game-control-btn");
+const resignBothRowEl = document.getElementById("resign-both-row");
+const resignWhiteBtnEl = document.getElementById("resign-white-btn");
+const resignBlackBtnEl = document.getElementById("resign-black-btn");
 const transcriptBtnEl = document.getElementById("transcript-btn");
 const evalBarWrapEl = document.getElementById("eval-bar-wrap");
 const evalBarEl = document.getElementById("eval-bar");
@@ -1162,20 +1175,39 @@ function updateChatInput(state) {
 // whether a person could be behind either side of the current game.
 // ---------------------------------------------------------------------
 function resignColorFor(state) {
+  // Only meaningful when exactly one side is 'web-user': the page has no
+  // notion of which color the person at the keyboard is playing, so this
+  // only works if there's just one web-user side to assume it's them.
+  // When both sides are 'web-user' (two people sharing this page, or one
+  // person playing both), that assumption breaks down — see the two
+  // explicit per-color buttons in updateGameControls() instead.
   if (!state || !state.started) return null;
   const whiteIsWeb = state.players.white === "web-user";
   const blackIsWeb = state.players.black === "web-user";
   if (whiteIsWeb && !blackIsWeb) return "white";
   if (blackIsWeb && !whiteIsWeb) return "black";
-  if (whiteIsWeb && blackIsWeb) return state.turn; // both web: whoever's turn it is
   return null;
 }
 
 function updateGameControls(state) {
   if (!state.started || state.game_over) {
     gameControlBtnEl.style.display = "none";
+    resignBothRowEl.style.display = "none";
     return;
   }
+  const whiteIsWeb = state.players.white === "web-user";
+  const blackIsWeb = state.players.black === "web-user";
+  if (whiteIsWeb && blackIsWeb) {
+    // Neither "whoever's turn it is" nor any other guess can tell which
+    // color the clicking person is playing, so offer both explicitly
+    // instead of the single ambiguous button.
+    gameControlBtnEl.style.display = "none";
+    resignBothRowEl.style.display = "flex";
+    resignWhiteBtnEl.onclick = () => doResign("white");
+    resignBlackBtnEl.onclick = () => doResign("black");
+    return;
+  }
+  resignBothRowEl.style.display = "none";
   const resignColor = resignColorFor(state);
   gameControlBtnEl.style.display = "";
   gameControlBtnEl.textContent = resignColor ? "Resign" : "Restart";
