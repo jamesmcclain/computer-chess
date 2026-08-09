@@ -381,6 +381,92 @@
           }
         }
       }
+    },
+    {
+      "id": "legible",
+      "label": "Legible",
+      "theme": "high-contrast flat silhouette, optimized for readability",
+      "material": "flat outlined silhouette",
+      "view": "isometric 3/4",
+      "read": "Bold, high-contrast graphic army built purely for visual legibility: each piece is a flat solid silhouette (black side pure black, white side pure white) wrapped in a thick outline of the opposite tone, so type and color both read instantly even at small size or from a distance.",
+      "pieces": {
+        "black": {
+          "king": {
+            "path": "black/legible/black_king.png",
+            "type": "king",
+            "color": "black",
+            "read": "Bold flat black silhouette king with a thick white outline, clear coronet and cross finial; designed for instant type recognition at a glance."
+          },
+          "queen": {
+            "path": "black/legible/black_queen.png",
+            "type": "queen",
+            "color": "black",
+            "read": "Bold flat black silhouette queen with a thick white outline, clear coronet crown and ball finial; high-contrast graphic icon style."
+          },
+          "rook": {
+            "path": "black/legible/black_rook.png",
+            "type": "rook",
+            "color": "black",
+            "read": "Bold flat black silhouette rook with a thick white outline and distinct crenellated battlement top on a wide base."
+          },
+          "bishop": {
+            "path": "black/legible/black_bishop.png",
+            "type": "bishop",
+            "color": "black",
+            "read": "Bold flat black silhouette bishop with a thick white outline, clear mitre top, diagonal slit, and ball finial."
+          },
+          "knight": {
+            "path": "black/legible/black_knight.png",
+            "type": "knight",
+            "color": "black",
+            "read": "Bold flat black silhouette knight with a thick white outline, horse head facing right on a chunky base."
+          },
+          "pawn": {
+            "path": "black/legible/black_pawn.png",
+            "type": "pawn",
+            "color": "black",
+            "read": "Bold flat black silhouette pawn with a thick white outline, simple ball head, collar ring, and wide base."
+          }
+        },
+        "white": {
+          "king": {
+            "path": "white/legible/white_king.png",
+            "type": "king",
+            "color": "white",
+            "read": "Bold flat white silhouette king with a thick black outline, clear coronet and cross finial; designed for instant type recognition at a glance."
+          },
+          "queen": {
+            "path": "white/legible/white_queen.png",
+            "type": "queen",
+            "color": "white",
+            "read": "Bold flat white silhouette queen with a thick black outline, clear coronet crown and ball finial; high-contrast graphic icon style."
+          },
+          "rook": {
+            "path": "white/legible/white_rook.png",
+            "type": "rook",
+            "color": "white",
+            "read": "Bold flat white silhouette rook with a thick black outline and distinct crenellated battlement top on a wide base."
+          },
+          "bishop": {
+            "path": "white/legible/white_bishop.png",
+            "type": "bishop",
+            "color": "white",
+            "read": "Bold flat white silhouette bishop with a thick black outline, clear mitre top, diagonal slit, and ball finial."
+          },
+          "knight": {
+            "path": "white/legible/white_knight.png",
+            "type": "knight",
+            "color": "white",
+            "read": "Bold flat white silhouette knight with a thick black outline, horse head facing right on a chunky base."
+          },
+          "pawn": {
+            "path": "white/legible/white_pawn.png",
+            "type": "pawn",
+            "color": "white",
+            "read": "Bold flat white silhouette pawn with a thick black outline, simple ball head, collar ring, and wide base."
+          }
+        }
+      }
     }
   ]
 }
