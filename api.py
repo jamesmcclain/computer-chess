@@ -127,7 +127,8 @@ API_DOC = {
         "POST /api/game/move": {
             "body": {"move": "e2e4 (UCI) or e4 (SAN)",
                      "chat": "optional, up to 240 chars",
-                     "reasoning": "optional, up to 1000 chars"},
+                     "tactical_reasoning": "optional, up to 1000 chars",
+                     "strategic_reasoning": "optional, up to 1000 chars"},
             "description": "Submit a move for whichever side is currently "
                             "to move. 'chat' (optional) is a short chat "
                             "line attached to this move — it is stamped, "
@@ -139,15 +140,18 @@ API_DOC = {
                             "sees it the next time they read the game "
                             "state, e.g. in the response to their own "
                             "next move, or a plain GET /api/game. "
-                            "'reasoning' (optional) is a private note on "
-                            "why you chose this move — unlike 'chat', it "
-                            "is never returned by this or any other "
-                            "endpoint while the game is in progress; it "
-                            "is kept server-side only until the game ends "
-                            "(see GET /api/game/transcript). If it "
-                            "becomes the engine's turn afterward, that "
-                            "engine replies immediately and its move is "
-                            "returned as 'engine_move'.",
+                            "'tactical_reasoning' and 'strategic_reasoning' "
+                            "(both optional) are private notes on why you "
+                            "chose this move — the former for concrete, "
+                            "move-local calculation, the latter for your "
+                            "longer-term plan. Unlike 'chat', neither is "
+                            "ever returned by this or any other endpoint "
+                            "while the game is in progress; both are kept "
+                            "server-side only until the game ends (see "
+                            "GET /api/game/transcript). If it becomes the "
+                            "engine's turn afterward, that engine replies "
+                            "immediately and its move is returned as "
+                            "'engine_move'.",
         },
         "GET /api/game/wait": {
             "query": {"color": "white|black",
@@ -231,8 +235,9 @@ API_DOC = {
                             "read by lichess.org, chess.com, and most "
                             "chess software. Every move's 'chat' (see "
                             "POST /api/game/move) and any private "
-                            "'reasoning' recorded for it are folded in as "
-                            "a PGN comment on that move — reasoning is "
+                            "'tactical_reasoning'/'strategic_reasoning' "
+                            "recorded for it are folded in as a PGN "
+                            "comment on that move — reasoning is "
                             "otherwise never returned by any endpoint, "
                             "but once the game is over there's no ongoing "
                             "advantage left to protect. Returns 400 if no "
@@ -393,11 +398,16 @@ def create_api_app(game):
         body = request.get_json(silent=True) or {}
         move_str = body.get("move")
         chat = body.get("chat")
-        reasoning = body.get("reasoning")
+        tactical_reasoning = body.get("tactical_reasoning")
+        strategic_reasoning = body.get("strategic_reasoning")
         if not move_str:
             return error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
         try:
-            player_move, engine_move = game.make_move(move_str, chat=chat, reasoning=reasoning)
+            player_move, engine_move = game.make_move(
+                move_str, chat=chat,
+                tactical_reasoning=tactical_reasoning,
+                strategic_reasoning=strategic_reasoning,
+            )
         except GameError as e:
             return error(str(e))
         return jsonify(move=player_move, engine_move=engine_move, state=game.state())

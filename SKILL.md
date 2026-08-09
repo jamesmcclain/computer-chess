@@ -59,12 +59,13 @@ Core facts to remember:
   tell the person in this conversation. Narrating is not the same as
   stopping — keep narrating and playing without a pause for user
   input, per the second bullet above.
-- **`chat` and `reasoning` are optional at the API level, but this
-  skill requires both on every move.** Send one of each with every
-  `POST /api/game/move` call. `chat` is for banter and trash talk
-  only — never put strategy in it, since your opponent and anyone at
-  the board viewer read it. `reasoning` is where your strategy and
-  analysis go — it stays private while the game is in progress.
+- **`chat`, `tactical_reasoning`, and `strategic_reasoning` are
+  optional at the API level, but this skill requires all three on
+  every move.** Send them with every `POST /api/game/move` call.
+  `chat` is for banter and trash talk only — never put strategy in it,
+  since your opponent and anyone at the board viewer read it.
+  `tactical_reasoning` and `strategic_reasoning` are where your
+  analysis goes — they stay private while the game is in progress.
   Display name (also in section 2) stays optional.
 - **You can "phone a friend" for a move recommendation, since you are
   always `"api-user"`.** This asks an engine for its move choice in
@@ -73,7 +74,8 @@ Core facts to remember:
   queries — 1 and 2 by default — tracked separately for GNU Chess and
   Stockfish, so you can draw on both. See section 4.5.
 - **Once the game ends, a PGN transcript is available.** It folds in
-  every move's chat and reasoning. See section 5.1.
+  every move's chat, tactical reasoning, and strategic reasoning. See
+  section 5.1.
 - **`state.eval` is a live Stockfish read on who is winning** — the
   board viewer's eval bar. It is purely informational, runs on its own
   separate Stockfish process, and has nothing to do with your side or
@@ -159,10 +161,10 @@ Keep `state`: `state.turn` names the side to move next.
 ## 2. Setting your name, chatting, and recording your reasoning
 
 Display name is optional and cosmetic — skip it unless the user asks
-for one. `chat` and `reasoning` are different: the API marks both
-optional, but this skill requires you to send both with every move.
-They serve opposite purposes — see below. None of the three affects
-move legality or turn order.
+for one. `chat`, `tactical_reasoning`, and `strategic_reasoning` are
+different: the API marks all three optional, but this skill requires
+you to send all three with every move. They serve different purposes —
+see below. None of them affects move legality or turn order.
 
 **Display name.** Set one with:
 
@@ -199,8 +201,8 @@ line goes out with a move:
 
 - `chat` is for banter and trash talk only. Never put strategy, a
   plan, or analysis in it — your opponent and anyone at the board
-  viewer read it right away. Put strategy in `reasoning` instead
-  (below).
+  viewer read it right away. Put strategy in `tactical_reasoning`/
+  `strategic_reasoning` instead (below).
 - `chat` can be up to 240 characters. Longer text is cut short.
 - There is no separate inbox. The API stamps your chat onto that
   move's entry in `move_log`. Your opponent sees it the next time
@@ -214,27 +216,30 @@ line goes out with a move:
   attach it to a move you submit anyway. Use your first move, or your
   last move before you resign. You cannot send chat without a move.
 
-**Private reasoning.** `reasoning` (up to 1000 characters, also cut
-short, not rejected) is a second field on `POST /api/game/move`,
-alongside `chat`. Send one with every move — this skill requires it,
-even though the API accepts a move without one:
+**Private reasoning.** `tactical_reasoning` and `strategic_reasoning`
+(each up to 1000 characters, also cut short, not rejected) are two
+more fields on `POST /api/game/move`, alongside `chat`. Send both with
+every move — this skill requires them, even though the API accepts a
+move without either:
 
 ```json
-{"move": "e2e4", "reasoning": "e4 grabs the center and opens lines for the bishop and queen."}
+{"move": "e2e4", "tactical_reasoning": "no immediate captures or threats to calculate", "strategic_reasoning": "e4 grabs the center and opens lines for the bishop and queen."}
 ```
 
-- `reasoning` holds your strategy: the analysis and plan behind the
-  move. This is the opposite of `chat` — keep strategy out of `chat`,
-  and keep banter out of `reasoning`.
-- Unlike `chat`, no endpoint returns `reasoning` while the game is in
-  progress. The server keeps it alone — not shown to your opponent,
-  anyone at the board viewer, or even back to you on a later read.
-  One exception: once the game ends, it goes into that game's PGN
-  transcript (section 5.1), since no advantage is left to protect.
+- `tactical_reasoning` holds your concrete, move-local calculation —
+  captures, checks, threats, forced sequences. `strategic_reasoning`
+  holds the longer-term plan behind the move. Together they are the
+  opposite of `chat` — keep strategy and calculation out of `chat`,
+  and keep banter out of both reasoning fields.
+- Unlike `chat`, no endpoint returns either reasoning field while the
+  game is in progress. The server keeps them alone — not shown to your
+  opponent, anyone at the board viewer, or even back to you on a later
+  read. One exception: once the game ends, both go into that game's
+  PGN transcript (section 5.1), since no advantage is left to protect.
 - This is not the plain-language explanation you give the user before
-  each move (section 4.1, step 4). Give both — one does not replace
-  the other. Narration talks to the user in this conversation.
-  `reasoning` is a permanent record kept on the server.
+  each move (section 4.1, step 4). Give all three — none replaces the
+  others. Narration talks to the user in this conversation; the
+  reasoning fields are a permanent record kept on the server.
 
 ## 3. Joining a game already in progress
 
@@ -305,14 +310,16 @@ Repeat this loop for each of your turns:
 4. Choose a legal move. Before you submit it, tell the user the idea
    behind it: what it does for your position, and why you picked it
    over the alternatives. Give this explanation every time, not only
-   for unusual moves. Also write your `reasoning` (your strategy —
-   section 2) and a `chat` line (banter only, no strategy — section
-   2). This skill requires both on every move.
-5. Submit the move with curl, `chat` and `reasoning` included:
+   for unusual moves. Also write your `tactical_reasoning` and
+   `strategic_reasoning` (your calculation and strategy — section 2)
+   and a `chat` line (banter only, no strategy — section 2). This
+   skill requires all three on every move.
+5. Submit the move with curl, `chat`, `tactical_reasoning`, and
+   `strategic_reasoning` included:
    ```bash
    curl -X POST http://10.0.2.2:5003/api/game/move \
      -H 'Content-Type: application/json' \
-     -d '{"move": "e2e4", "chat": "Good luck!", "reasoning": "e4 grabs the center and opens lines for the bishop and queen."}'
+     -d '{"move": "e2e4", "chat": "Good luck!", "tactical_reasoning": "no immediate captures or threats to calculate", "strategic_reasoning": "e4 grabs the center and opens lines for the bishop and queen."}'
    ```
 6. Repeat from step 1 until the game ends (section 5). Do this on
    your own, one turn at a time, with no stop for user input between
@@ -339,16 +346,17 @@ promotion), `san` (for example, `"e4"`, `"Nf3"`, `"O-O"`), `from`,
 `to`, and `promotion`.
 
 Submit a move. UCI and SAN both work — use UCI, since it has only one
-meaning. `chat` and `reasoning` (section 2) attach a chat line and a
-private note. The API marks both optional, but this skill requires
-you to send both, every time: `chat` for banter, `reasoning` for your
-strategy.
+meaning. `chat`, `tactical_reasoning`, and `strategic_reasoning`
+(section 2) attach a chat line and two private notes. The API marks
+all three optional, but this skill requires you to send all three,
+every time: `chat` for banter, `tactical_reasoning` for your
+calculation, `strategic_reasoning` for your plan.
 
 ```
 POST /api/game/move
 Content-Type: application/json
 
-{"move": "e2e4", "chat": "Good luck!", "reasoning": "e4 grabs the center"}
+{"move": "e2e4", "chat": "Good luck!", "tactical_reasoning": "no immediate tactics", "strategic_reasoning": "e4 grabs the center"}
 ```
 
 Response:
@@ -571,10 +579,10 @@ GET /api/game/transcript
 - Returns raw PGN text, not JSON: metadata as tag pairs at the top
   (players, result, engine names and levels where relevant, how the
   game ended), then the move list.
-- Every move's `chat` (section 2) and any private `reasoning` you
-  recorded for it (also section 2) appear as a comment on that move.
-  This is the only place `reasoning` is ever exposed — once the game
-  is over, no advantage is left to protect.
+- Every move's `chat` (section 2) and any private `tactical_reasoning`/
+  `strategic_reasoning` you recorded for it (also section 2) appear as
+  a comment on that move. This is the only place reasoning is ever
+  exposed — once the game is over, no advantage is left to protect.
 - `400` means no game has started, or the current game is still in
   progress. This only works once `state.game_over` is `true`.
 - Use this endpoint when the user asks for a copy of the game, a way

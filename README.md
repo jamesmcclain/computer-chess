@@ -302,7 +302,7 @@ started. A timed-out response looks the same as any other: check
 ### `POST /api/game/move` — submit a move
 
 ```json
-{"move": "e2e4", "chat": "Good luck!", "reasoning": "e4 grabs the center"}
+{"move": "e2e4", "chat": "Good luck!", "tactical_reasoning": "no immediate tactics", "strategic_reasoning": "e4 grabs the center"}
 ```
 
 This endpoint accepts UCI notation (`e2e4`, `e7e8q` for promotion) or
@@ -320,14 +320,17 @@ opponent sees both the next time they read the game state — for
 example, the response to their own next move. A person watching the
 board viewer sees it there too, next to the move.
 
-`reasoning` (optional, up to 1000 characters, also trimmed rather
-than rejected if longer) is a private note on why this move was
-chosen. Unlike `chat`, it is never returned by this or any other
-endpoint while the game is in progress. It is kept server-side only,
-for example for later review by whoever is operating the server. The
-one exception is `GET /api/game/transcript` (below): once the game
-has ended, reasoning is folded into that game's transcript, since
-there is no longer any ongoing advantage to protect.
+`tactical_reasoning` and `strategic_reasoning` (both optional, up to
+1000 characters each, also trimmed rather than rejected if longer) are
+private notes on why this move was chosen — `tactical_reasoning` for
+concrete, move-local calculation (captures, checks, threats),
+`strategic_reasoning` for the longer-term plan behind it. Unlike
+`chat`, neither is ever returned by this or any other endpoint while
+the game is in progress. Both are kept server-side only, for example
+for later review by whoever is operating the server. The one exception
+is `GET /api/game/transcript` (below): once the game has ended, both
+are folded into that game's transcript, since there is no longer any
+ongoing advantage to protect.
 
 ```json
 {"move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"},
@@ -408,11 +411,11 @@ file rather than displaying it.
 
 Metadata (players, result, engine names and levels where relevant, and
 how the game ended) is in the PGN tag pairs at the top. Every move's
-`chat` (see `POST /api/game/move` above) and any private `reasoning`
-recorded for it are folded in as a PGN comment on that move —
-`reasoning` is otherwise never returned by any endpoint, but once the
-game is over there is no ongoing advantage left to protect. For
-example:
+`chat` (see `POST /api/game/move` above) and any private
+`tactical_reasoning`/`strategic_reasoning` recorded for it are folded
+in as a PGN comment on that move — reasoning is otherwise never
+returned by any endpoint, but once the game is over there is no
+ongoing advantage left to protect. For example:
 
 ```
 [Event "computer-chess"]
@@ -428,7 +431,7 @@ example:
 [BlackEngineLevel "10"]
 [Termination "checkmate"]
 
-1. e4 {Chat: Good luck! / Reasoning: e4 grabs the center} e5 2. Qh5 Nc6
+1. e4 {Chat: Good luck! / Tactical: no immediate tactics / Strategic: e4 grabs the center} e5 2. Qh5 Nc6
 3. Bc4 Nf6 4. Qxf7# {Chat: gg} 1-0
 ```
 

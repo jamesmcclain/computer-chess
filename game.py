@@ -115,12 +115,13 @@ AUTOPLAY_PAUSE_SECONDS = 1.0
 # POST /api/game/chat in the module history if you're looking for one.
 NAME_MAX_LEN = 40
 CHAT_MAX_LEN = 240
-# "reasoning" is a private note an API user can attach to their own move
-# (see make_move()) — never returned by any endpoint *while the game is
-# in progress*, so it's allowed a little more room than a chat message.
-# The one exception is transcript() (see below): once a game has ended,
-# there is no ongoing competitive advantage left to protect, so a
-# finished game's transcript folds reasoning in as PGN comments.
+# "tactical_reasoning" and "strategic_reasoning" are private notes an API
+# user can attach to their own move (see make_move()) — never returned by
+# any endpoint *while the game is in progress*, so each is allowed a
+# little more room than a chat message. The one exception is transcript()
+# (see below): once a game has ended, there is no ongoing competitive
+# advantage left to protect, so a finished game's transcript folds both
+# in as PGN comments.
 REASONING_MAX_LEN = 1000
 
 # Statuses state_status()/transcript() treat as "the game has ended" —
@@ -338,17 +339,17 @@ class ChessGame:
         self.resigned_by = None      # "white" | "black"
         self.move_log = []           # [{"ply","color","uci","san","by","name","chat","ts"}, ...]
         self.created_at = None
-        # Optional private note an API user can attach to their own move
-        # via make_move()'s `reasoning` argument. Kept out of move_log and
-        # every other read endpoint *while the game is in progress* —
-        # "not shared with the other player" means not shared with anyone
-        # over the API, since there is no authentication to tell players
-        # apart. The one exception is transcript() (see below): once a
-        # game has ended, reasoning is folded into that game's PGN
-        # transcript as move comments, since there's no ongoing
-        # competitive edge left to protect at that point. Reset every
-        # new_game().
-        self._reasoning_log = []     # [{"ply","color","reasoning","ts"}, ...]
+        # Optional private notes an API user can attach to their own move
+        # via make_move()'s `tactical_reasoning`/`strategic_reasoning`
+        # arguments. Kept out of move_log and every other read endpoint
+        # *while the game is in progress* — "not shared with the other
+        # player" means not shared with anyone over the API, since there
+        # is no authentication to tell players apart. The one exception
+        # is transcript() (see below): once a game has ended, reasoning
+        # is folded into that game's PGN transcript as move comments,
+        # since there's no ongoing competitive edge left to protect at
+        # that point. Reset every new_game().
+        self._reasoning_log = []     # [{"ply","color","tactical_reasoning","strategic_reasoning","ts"}, ...]
         # Difficulty is per side, not per game, so an engine-vs-engine game
         # can pit two different strengths against each other. For a game
         # with only one "engine" side, only that side's entry is ever read.
@@ -1058,7 +1059,7 @@ class ChessGame:
                 })
             return moves
 
-    def make_move(self, move_str, chat=None, reasoning=None):
+    def make_move(self, move_str, chat=None, tactical_reasoning=None, strategic_reasoning=None):
         """Submit a move for whichever side is currently to move — works
         the same whether that side is 'api-user' or 'web-user'; only
         'engine' turns are rejected here (an engine moves itself).
@@ -1070,11 +1071,14 @@ class ChessGame:
         call) sees them; there is no separate delivery step, and no
         standalone/banter channel — all chat rides along with a move.
 
-        `reasoning` (optional) is a private note about why this move was
-        chosen. Unlike `chat`, it is never returned by this or any other
-        method while the game is in progress — it is kept in
-        self._reasoning_log, which no endpoint reads from until the game
-        ends (see transcript() and that attribute's comment in __init__).
+        `tactical_reasoning` and `strategic_reasoning` (both optional)
+        are private notes about why this move was chosen — the former
+        for concrete, move-local calculation (captures, checks, threats),
+        the latter for the longer-term plan behind it. Unlike `chat`,
+        neither is ever returned by this or any other method while the
+        game is in progress — both are kept in self._reasoning_log, which
+        no endpoint reads from until the game ends (see transcript() and
+        that attribute's comment in __init__).
 
         Returns (player_move_entry, engine_entry_or_None) — the engine
         entry is set if, after this move, it becomes an 'engine' side's
@@ -1102,11 +1106,15 @@ class ChessGame:
                 player_entry["chat"] = clean_chat
             self.move_log.append(player_entry)
 
-            clean_reasoning = self._clean_text(reasoning, REASONING_MAX_LEN)
-            if clean_reasoning is not None:
-                self._reasoning_log.append(
-                    {"ply": ply, "color": color, "reasoning": clean_reasoning, "ts": time.time()}
-                )
+            clean_tactical = self._clean_text(tactical_reasoning, REASONING_MAX_LEN)
+            clean_strategic = self._clean_text(strategic_reasoning, REASONING_MAX_LEN)
+            if clean_tactical is not None or clean_strategic is not None:
+                self._reasoning_log.append({
+                    "ply": ply, "color": color,
+                    "tactical_reasoning": clean_tactical,
+                    "strategic_reasoning": clean_strategic,
+                    "ts": time.time(),
+                })
 
             engine_entry = None
             if self._status() == "in_progress" and self._current_player_type() == "engine":
@@ -1226,11 +1234,11 @@ class ChessGame:
         that just ended — the standard plain-text chess-game format;
         see the module comment above ChessGame for a link. Folds in any
         move-attached chat (make_move()'s `chat`) and any private
-        `reasoning` (see that argument's docstring and
-        self._reasoning_log's comment in __init__) as PGN comments on
-        the move they belong to.
+        `tactical_reasoning`/`strategic_reasoning` (see those arguments'
+        docstring and self._reasoning_log's comment in __init__) as PGN
+        comments on the move they belong to.
 
-        Only available once the game has actually ended: `reasoning` is
+        Only available once the game has actually ended: reasoning is
         never exposed while a game is in progress, but once it's over
         there is no ongoing advantage left to protect, so it's folded
         into this one summary artifact instead of staying hidden
@@ -1249,7 +1257,8 @@ class ChessGame:
                     f"(status: {status})"
                 )
             move_log = list(self.move_log)
-            reasoning_by_ply = {r["ply"]: r["reasoning"] for r in self._reasoning_log}
+            tactical_by_ply = {r["ply"]: r["tactical_reasoning"] for r in self._reasoning_log}
+            strategic_by_ply = {r["ply"]: r["strategic_reasoning"] for r in self._reasoning_log}
             winner = self._winner()
             white_type, black_type = self.white_type, self.black_type
             player_names = dict(self.player_names)
@@ -1306,9 +1315,12 @@ class ChessGame:
             chat = entry.get("chat")
             if chat:
                 comment_bits.append(f"Chat: {chat}")
-            reasoning = reasoning_by_ply.get(ply)
-            if reasoning:
-                comment_bits.append(f"Reasoning: {reasoning}")
+            tactical = tactical_by_ply.get(ply)
+            if tactical:
+                comment_bits.append(f"Tactical: {tactical}")
+            strategic = strategic_by_ply.get(ply)
+            if strategic:
+                comment_bits.append(f"Strategic: {strategic}")
             if comment_bits:
                 parts.append("{" + _pgn_escape_comment(" / ".join(comment_bits)) + "}")
         parts.append(result)
