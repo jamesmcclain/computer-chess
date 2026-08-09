@@ -411,11 +411,19 @@ file rather than displaying it.
 
 Metadata (players, result, engine names and levels where relevant, and
 how the game ended) is in the PGN tag pairs at the top. Every move's
-`chat` (see `POST /api/game/move` above) and any private
-`tactical_reasoning`/`strategic_reasoning` recorded for it are folded
-in as a PGN comment on that move — reasoning is otherwise never
-returned by any endpoint, but once the game is over there is no
-ongoing advantage left to protect. For example:
+`chat` (see `POST /api/game/move` above), any private
+`tactical_reasoning`/`strategic_reasoning` recorded for it, and the
+eval bar's own read of the resulting position (`state.eval`, if the
+eval bar was on) are folded in as a PGN comment on that move — chat and
+reasoning are otherwise never returned by any endpoint, but once the
+game is over there is no ongoing advantage left to protect. The eval
+itself was already public/informational throughout the game (see
+`state.eval` below), so it's included whenever a move actually got a
+completed read; a move with the eval bar off, or a read still pending
+when a later move superseded it, has no `Eval:` comment. Scores are
+pawns from white's point of view (`+0.34` = white better by about a
+third of a pawn, `-1.20` = black better by a bit over a pawn), or
+`#N`/`#-N` for a forced mate in N by white/black. For example:
 
 ```
 [Event "computer-chess"]
@@ -431,8 +439,8 @@ ongoing advantage left to protect. For example:
 [BlackEngineLevel "10"]
 [Termination "checkmate"]
 
-1. e4 {Chat: Good luck! / Tactical: no immediate tactics / Strategic: e4 grabs the center} e5 2. Qh5 Nc6
-3. Bc4 Nf6 4. Qxf7# {Chat: gg} 1-0
+1. e4 {Chat: Good luck! / Tactical: no immediate tactics / Strategic: e4 grabs the center / Eval: +0.34} e5 2. Qh5 Nc6
+3. Bc4 Nf6 4. Qxf7# {Chat: gg / Eval: #3} 1-0
 ```
 
 Returns `400` if no game has started, or the current game is still

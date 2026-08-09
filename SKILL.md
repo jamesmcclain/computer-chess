@@ -74,8 +74,8 @@ Core facts to remember:
   queries — 1 and 2 by default — tracked separately for GNU Chess and
   Stockfish, so you can draw on both. See section 4.5.
 - **Once the game ends, a PGN transcript is available.** It folds in
-  every move's chat, tactical reasoning, and strategic reasoning. See
-  section 5.1.
+  every move's chat, tactical reasoning, strategic reasoning, and eval
+  bar read. See section 5.1.
 - **`state.eval` is a live Stockfish read on who is winning** — the
   board viewer's eval bar. It is purely informational, runs on its own
   separate Stockfish process, and has nothing to do with your side or
@@ -579,10 +579,16 @@ GET /api/game/transcript
 - Returns raw PGN text, not JSON: metadata as tag pairs at the top
   (players, result, engine names and levels where relevant, how the
   game ended), then the move list.
-- Every move's `chat` (section 2) and any private `tactical_reasoning`/
-  `strategic_reasoning` you recorded for it (also section 2) appear as
-  a comment on that move. This is the only place reasoning is ever
-  exposed — once the game is over, no advantage is left to protect.
+- Every move's `chat` (section 2), any private `tactical_reasoning`/
+  `strategic_reasoning` you recorded for it (also section 2), and the
+  eval bar's own read of the position right after that move (if the
+  eval bar was on, and a read completed before it was superseded)
+  appear as a comment on that move. This is the only place reasoning
+  is ever exposed — once the game is over, no advantage is left to
+  protect. The eval was already public throughout the game (`state.eval`
+  above), just not previously attached to a specific move; it's given
+  as pawns from white's point of view (`+0.34`, `-1.20`) or `#N`/`#-N`
+  for a forced mate in N by white/black.
 - `400` means no game has started, or the current game is still in
   progress. This only works once `state.game_over` is `true`.
 - Use this endpoint when the user asks for a copy of the game, a way

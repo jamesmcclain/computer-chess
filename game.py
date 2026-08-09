@@ -289,6 +289,17 @@ def _pgn_escape_comment(text):
     return text.replace("{", "(").replace("}", ")")
 
 
+def _format_eval(score_cp, mate):
+    """Format one eval-bar reading (see ChessGame._eval_log) for a PGN
+    comment: pawns to two decimals with an explicit sign for a normal
+    score (e.g. "+0.34", "-1.20"), or "#N"/"#-N" for a forced mate in N
+    from white's/black's perspective — both already in white's POV (see
+    _run_eval's `score.pov(chess.WHITE)`), matching self.eval."""
+    if mate is not None:
+        return f"#{mate}"
+    return f"{score_cp / 100:+.2f}"
+
+
 def _wrap_pgn_movetext(text, width=80):
     """Soft-wrap movetext at `width` columns, breaking only on spaces.
     Not required by the PGN spec (files up to 255 columns are legal),
@@ -350,6 +361,22 @@ class ChessGame:
         # since there's no ongoing competitive edge left to protect at
         # that point. Reset every new_game().
         self._reasoning_log = []     # [{"ply","color","tactical_reasoning","strategic_reasoning","ts"}, ...]
+        # History of the eval bar's own reads (see _trigger_eval_locked /
+        # _run_eval below), one entry per ply that got a completed
+        # analysis — unlike self.eval (the single latest read, always
+        # public via state()), this is never returned by any endpoint
+        # while the game is in progress. It exists purely to fold a
+        # per-move evaluation into transcript() once the game ends,
+        # alongside chat/reasoning. This eval is already public/
+        # informational (the board viewer's eval bar runs on its own
+        # engine, independent of either side), so there's no
+        # confidentiality reason to withhold it mid-game the way
+        # reasoning is — it's just not useful to any endpoint until
+        # there's a finished move list to attach it to. A ply with a
+        # superseded (see self._eval_generation) or errored analysis
+        # simply has no entry here, same as a move with no chat. Reset
+        # every new_game().
+        self._eval_log = []          # [{"ply","score_cp","mate","pov","ts"}, ...]
         # Difficulty is per side, not per game, so an engine-vs-engine game
         # can pit two different strengths against each other. For a game
         # with only one "engine" side, only that side's entry is ever read.
@@ -531,6 +558,7 @@ class ChessGame:
             self.resigned_by = None
             self.move_log = []
             self._reasoning_log = []
+            self._eval_log = []
             self.created_at = time.time()
             self._generation += 1
             generation = self._generation
@@ -918,18 +946,27 @@ class ChessGame:
             self.eval = {**self.eval, "quality": self.eval_quality, "pending": True, "error": None}
         board_copy = self.board.copy()
         quality = self.eval_quality
+        ply = len(self.move_log)
         threading.Thread(
-            target=self._run_eval, args=(generation, board_copy, quality),
+            target=self._run_eval, args=(generation, board_copy, quality, ply),
             daemon=True, name="eval-bar",
         ).start()
 
-    def _run_eval(self, generation, board, quality):
+    def _run_eval(self, generation, board, quality, ply):
         """Runs in its own background thread (see _trigger_eval_locked).
         `board` is a private copy, so this never races the live game
         board. Talks to the dedicated eval engine under self._eval_lock
         only (never self._lock) for the duration of the actual engine
         call, so a slow evaluation can never block a move; self._lock is
-        only reacquired briefly afterward, to publish the result."""
+        only reacquired briefly afterward, to publish the result.
+
+        `ply` is the move-log length at the moment this analysis was
+        triggered — i.e. which move's resulting position this is an eval
+        of. On success, besides updating the live self.eval (the eval
+        bar), this appends to self._eval_log so transcript() can later
+        fold a per-move eval into the PGN. `ply` 0 (the starting
+        position, before any move) and a failed analysis are both
+        skipped — nothing to attach either to."""
         time_limit = EVAL_QUALITY_TIME_LIMITS[quality]
         try:
             with self._eval_lock:
@@ -944,6 +981,11 @@ class ChessGame:
             if generation != self._eval_generation:
                 return  # a newer position/quality has since superseded this result
             self.eval = {"quality": quality, "pov": "white", "pending": False, **result}
+            if ply > 0 and result["error"] is None:
+                self._eval_log.append({
+                    "ply": ply, "score_cp": result["score_cp"], "mate": result["mate"],
+                    "pov": "white", "ts": time.time(),
+                })
             self._bump_version_locked()
 
     def set_name(self, color, name):
@@ -1233,10 +1275,17 @@ class ChessGame:
         """Build a PGN (Portable Game Notation) transcript of the game
         that just ended — the standard plain-text chess-game format;
         see the module comment above ChessGame for a link. Folds in any
-        move-attached chat (make_move()'s `chat`) and any private
+        move-attached chat (make_move()'s `chat`), any private
         `tactical_reasoning`/`strategic_reasoning` (see those arguments'
-        docstring and self._reasoning_log's comment in __init__) as PGN
-        comments on the move they belong to.
+        docstring and self._reasoning_log's comment in __init__), and
+        the eval bar's own per-move read (self._eval_log — see its
+        comment in __init__) as PGN comments on the move they belong to.
+        Unlike chat/reasoning, the eval is already public/informational
+        (the board viewer's eval bar, independent of either side), so
+        it's not withheld for confidentiality — it's just not attached
+        anywhere until now, and a move with no completed analysis (eval
+        bar off, or a result superseded before it landed) has no eval
+        comment, same as one with no chat.
 
         Only available once the game has actually ended: reasoning is
         never exposed while a game is in progress, but once it's over
@@ -1259,6 +1308,7 @@ class ChessGame:
             move_log = list(self.move_log)
             tactical_by_ply = {r["ply"]: r["tactical_reasoning"] for r in self._reasoning_log}
             strategic_by_ply = {r["ply"]: r["strategic_reasoning"] for r in self._reasoning_log}
+            eval_by_ply = {r["ply"]: r for r in self._eval_log}
             winner = self._winner()
             white_type, black_type = self.white_type, self.black_type
             player_names = dict(self.player_names)
@@ -1321,6 +1371,9 @@ class ChessGame:
             strategic = strategic_by_ply.get(ply)
             if strategic:
                 comment_bits.append(f"Strategic: {strategic}")
+            eval_entry = eval_by_ply.get(ply)
+            if eval_entry:
+                comment_bits.append(f"Eval: {_format_eval(eval_entry['score_cp'], eval_entry['mate'])}")
             if comment_bits:
                 parts.append("{" + _pgn_escape_comment(" / ".join(comment_bits)) + "}")
         parts.append(result)
