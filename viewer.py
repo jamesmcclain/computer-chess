@@ -239,7 +239,13 @@ PAGE = """<!doctype html>
      frame — the practical benefit a heavier engine like three.js would
      bring here, without standing up a WebGL context for what is
      fundamentally a flat 2D grid of images. */
-  #board-row { display: flex; align-items: center; justify-content: center; gap: 0.7rem; width: 100%; flex: 1 1 auto; min-height: 0; }
+  /* align-items: stretch (the default) is required here, not center —
+     #board-wrap's own "flex: 1 1 auto" only grows it to fill #board-row's
+     height if #board-row lets it stretch that far; align-items: center
+     would instead size #board-wrap to its (initially empty) content, and
+     since fitBoard() measures #board-wrap's own height to size the board,
+     that shrinks the whole board down to its 160px floor. */
+  #board-row { display: flex; justify-content: center; gap: 0.7rem; width: 100%; flex: 1 1 auto; min-height: 0; }
   #board-wrap { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; width: 100%; min-height: 0; }
 
   /* ---- eval bar -----------------------------------------------------
@@ -248,7 +254,7 @@ PAGE = """<!doctype html>
      down over Black's share (dark) — mirrors how a chess.com/lichess
      eval bar reads. Sized in JS (fitBoard) to match the board's own
      height, since #board is sized there too. */
-  #eval-bar-wrap { display: flex; flex-direction: column; align-items: center; gap: 0.3rem; flex: 0 0 auto; }
+  #eval-bar-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.3rem; flex: 0 0 auto; }
   #eval-bar {
     width: 1.1rem; border-radius: 4px; overflow: hidden; background: #1a1a1a;
     border: 1px solid var(--panel-border); display: flex; flex-direction: column;
