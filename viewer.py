@@ -382,12 +382,7 @@ PAGE = """<!doctype html>
     </div>
     <div class="start-row" id="start-friend-row" style="display:none;">
       <label>Friend calls</label>
-      <span class="friend-inputs">
-        <input type="number" id="start-friend-l20" min="-1" max="50" step="1" title="Level-20 phone-a-friend queries allowed per api-user side (-1 = unlimited)">
-        <span class="friend-inputs-tag">&times; L20</span>
-        <input type="number" id="start-friend-l10" min="-1" max="50" step="1" title="Level-10 phone-a-friend queries allowed per api-user side (-1 = unlimited)">
-        <span class="friend-inputs-tag">&times; L10</span>
-      </span>
+      <span class="friend-inputs" id="start-friend-engines"></span>
     </div>
     <button id="start-btn">Start game</button>
     <div id="start-error"></div>
@@ -1192,8 +1187,7 @@ async function initStartPanel() {
   const whiteLevelSel = document.getElementById("start-white-level");
   const blackLevelSel = document.getElementById("start-black-level");
   const friendRow = document.getElementById("start-friend-row");
-  const friendL20 = document.getElementById("start-friend-l20");
-  const friendL10 = document.getElementById("start-friend-l10");
+  const friendEnginesEl = document.getElementById("start-friend-engines");
   const errEl = document.getElementById("start-error");
   const startBtn = document.getElementById("start-btn");
 
@@ -1201,9 +1195,35 @@ async function initStartPanel() {
   fillSelect(blackSel, PLAYER_TYPES, "engine");
   fillSelect(whiteEngineSel, ENGINE_TYPES, "gnuchess");
   fillSelect(blackEngineSel, ENGINE_TYPES, "gnuchess");
-  // Defaults mirror game.py's DEFAULT_FRIEND_LIMITS (level 20: 1, level 10: 2).
-  friendL20.value = "1";
-  friendL10.value = "2";
+
+  // One independent L20/L10 budget pair per engine, so each engine's
+  // phone-a-friend quota can be set separately (see game.py's
+  // ENGINE_NAMES / DEFAULT_FRIEND_LIMITS — level 20: 1, level 10: 2 by
+  // default, same starting point for every engine). Built dynamically
+  // from ENGINE_TYPES so this scales to however many engines the server
+  // supports, not just two.
+  const friendInputs = {}; // engine id -> { l20, l10 }
+  ENGINE_TYPES.forEach((eng) => {
+    const l20 = document.createElement("input");
+    l20.type = "number"; l20.min = "-1"; l20.max = "50"; l20.step = "1";
+    l20.title = "Level-20 phone-a-friend queries allowed per api-user side, " + eng.label + " (-1 = unlimited)";
+    l20.value = "1";
+    const l20Tag = document.createElement("span");
+    l20Tag.className = "friend-inputs-tag";
+    l20Tag.textContent = "\\u00d7 L20";
+    const l10 = document.createElement("input");
+    l10.type = "number"; l10.min = "-1"; l10.max = "50"; l10.step = "1";
+    l10.title = "Level-10 phone-a-friend queries allowed per api-user side, " + eng.label + " (-1 = unlimited)";
+    l10.value = "2";
+    const l10Tag = document.createElement("span");
+    l10Tag.className = "friend-inputs-tag";
+    l10Tag.textContent = "\\u00d7 L10";
+    const engTag = document.createElement("span");
+    engTag.className = "friend-inputs-tag";
+    engTag.textContent = eng.label + ":";
+    friendEnginesEl.append(engTag, l20, l20Tag, l10, l10Tag);
+    friendInputs[eng.id] = { l20, l10 };
+  });
 
   // Each side's engine and level controls are independent: an
   // engine-vs-engine game can (and often should, to be an interesting
@@ -1251,8 +1271,14 @@ async function initStartPanel() {
       body.black_engine = blackEngineSel.value;
     }
     if (whiteSel.value === "api-user" || blackSel.value === "api-user") {
-      if (friendL20.value !== "") body.friend_level20_limit = parseInt(friendL20.value, 10);
-      if (friendL10.value !== "") body.friend_level10_limit = parseInt(friendL10.value, 10);
+      const friendLimits = {};
+      Object.entries(friendInputs).forEach(([engId, { l20, l10 }]) => {
+        const tiers = {};
+        if (l20.value !== "") tiers["20"] = parseInt(l20.value, 10);
+        if (l10.value !== "") tiers["10"] = parseInt(l10.value, 10);
+        if (Object.keys(tiers).length) friendLimits[engId] = tiers;
+      });
+      if (Object.keys(friendLimits).length) body.friend_limits = friendLimits;
     }
     try {
       const res = await fetch("/game/start", {
@@ -1406,11 +1432,23 @@ def create_viewer_app(game):
         black_engine = body.get("black_engine")
         friend_level10_limit = body.get("friend_level10_limit")
         friend_level20_limit = body.get("friend_level20_limit")
+        friend_limits = body.get("friend_limits")
+        try:
+            engine_friend_limits = None
+            if isinstance(friend_limits, dict):
+                engine_friend_limits = {
+                    name: {int(tier): limit for tier, limit in (tiers or {}).items()}
+                    for name, tiers in friend_limits.items()
+                }
+        except (TypeError, ValueError, AttributeError):
+            return _error("'friend_limits' must be an object of the form "
+                           "{engine_name: {tier: limit}}")
         try:
             state, engine_move = game.new_game(
                 white, black, level=level, white_level=white_level, black_level=black_level,
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
+                engine_friend_limits=engine_friend_limits,
             )
         except GameError as e:
             return _error(str(e))

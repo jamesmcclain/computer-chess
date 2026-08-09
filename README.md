@@ -72,19 +72,20 @@ below to set or change a name for a game already in progress.
 integers `0`-`50` or `-1` for unlimited, default `2` and `1`
 respectively) set this game's "phone a friend" budget: how many
 level-10 and level-20 engine hints an `"api-user"` side may request
-over the course of the game, for *both* engines at once. Each engine's
-quota is tracked separately, not pooled —
-`gnuchess_friend_level10_limit`/`gnuchess_friend_level20_limit` and
-`stockfish_friend_level10_limit`/`stockfish_friend_level20_limit`
-(each optional) set one engine's budget at one tier specifically, and
-win over the generic fields for that engine — so an `"api-user"` side
-can be given, say, 5 GNU Chess hints and 1 Stockfish hint, independent
-of each other. Any of these six fields can be `-1` instead of a
-number, which makes that tier (for that engine, or for both engines
-via the generic fields) unlimited for the game — the query never
-fails for running out. Like the name fields above, none of these are
-sticky — every new game gets the defaults shown above unless
-overridden here,
+over the course of the game, for *every* engine at once. Each engine's
+quota is tracked separately, not pooled — `friend_limits` (optional,
+an object of the form `{engine_name: {tier: limit}}`, e.g.
+`{"stockfish": {"10": 5}, "gnuchess": {"20": 0}}`) sets one or more
+engines' budgets at one or both tiers specifically, and wins over the
+generic fields for whichever engine/tier it names — so an
+`"api-user"` side can be given, say, 5 GNU Chess hints and 1 Stockfish
+hint, independent of each other, and this scales to however many
+engines the server supports. Any limit, generic or per-engine, can be
+`-1` instead of a number, which makes that tier (for that engine, or
+for every engine via the generic fields) unlimited for the game — the
+query never fails for running out. Like the name fields above, none
+of these are sticky — every new game gets the defaults shown above
+unless overridden here,
 and usage always resets to zero. See `POST /api/game/phone-a-friend`
 below.
 
@@ -304,9 +305,8 @@ whether or not you take the suggestion.
 
 `level` is `10` or `20` — these are the only two tiers offered. Each
 has its own budget for the game, per engine — set at `POST /api/game`
-time (`friend_level10_limit`/`friend_level20_limit` for both engines
-at once, or the per-engine `gnuchess_friend_level*_limit`/
-`stockfish_friend_level*_limit` fields; default `2` and `1`
+time (`friend_level10_limit`/`friend_level20_limit` for every engine
+at once, or the per-engine `friend_limits` field; default `2` and `1`
 respectively) and tracked separately per side, so in a two-API-user
 game each caller gets their own budget. A budget can be set to `-1`
 for unlimited — then this call never fails for running out of

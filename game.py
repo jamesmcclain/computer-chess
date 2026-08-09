@@ -369,8 +369,7 @@ class ChessGame:
                  engine=None, white_engine=None, black_engine=None,
                  white_name=None, black_name=None,
                  friend_level10_limit=None, friend_level20_limit=None,
-                 gnuchess_friend_level10_limit=None, gnuchess_friend_level20_limit=None,
-                 stockfish_friend_level10_limit=None, stockfish_friend_level20_limit=None):
+                 engine_friend_limits=None):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
         ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
         (optional, 0-20, Stockfish's native "Skill Level" scale — see
@@ -393,15 +392,15 @@ class ChessGame:
         `friend_level10_limit` and `friend_level20_limit` (each optional,
         integers, default DEFAULT_FRIEND_LIMITS) set this game's "phone a
         friend" budget — see phone_a_friend() — for the two FRIEND_LEVELS
-        tiers, for both engines at once. `gnuchess_friend_level10_limit`/
-        `gnuchess_friend_level20_limit` and
-        `stockfish_friend_level10_limit`/`stockfish_friend_level20_limit`
-        (each optional) set one engine's budget at one tier specifically,
-        and win over the generic `friend_level10_limit`/
-        `friend_level20_limit` for that engine — quotas are tracked
-        separately per engine (see self.friend_limits), not pooled, so an
-        'api-user' side can draw on GNU Chess hints and Stockfish hints
-        independently. Like the name settings, none of these are sticky:
+        tiers, for every engine in ENGINE_NAMES at once. `engine_friend_limits`
+        (optional, a dict of the form {engine_name: {tier: limit}}, using
+        any subset of ENGINE_NAMES and FRIEND_LEVELS) sets one engine's
+        budget at one tier specifically, and wins over the generic
+        `friend_level10_limit`/`friend_level20_limit` for that engine —
+        quotas are tracked separately per engine (see self.friend_limits),
+        not pooled, so an 'api-user' side can draw on each engine's hints
+        independently, no matter how many engines ENGINE_NAMES lists. Like
+        the name settings, none of these are sticky:
         every new game gets the defaults unless overridden here, and
         usage always resets to zero. Returns (state_dict,
         engine_move_or_None) — engine_move is set if white is 'engine',
@@ -428,9 +427,13 @@ class ChessGame:
             white_name = self._clean_text(white_name, NAME_MAX_LEN)
         if black_name is not None:
             black_name = self._clean_text(black_name, NAME_MAX_LEN)
+        engine_friend_limits = engine_friend_limits or {}
+        unknown_engines = set(engine_friend_limits) - set(ENGINE_NAMES)
+        if unknown_engines:
+            raise GameError(f"'engine_friend_limits' has unknown engine name(s): {', '.join(sorted(unknown_engines))}")
         friend_overrides = {
-            "gnuchess": {10: gnuchess_friend_level10_limit, 20: gnuchess_friend_level20_limit},
-            "stockfish": {10: stockfish_friend_level10_limit, 20: stockfish_friend_level20_limit},
+            name: {tier: (engine_friend_limits.get(name) or {}).get(tier) for tier in FRIEND_LEVELS}
+            for name in ENGINE_NAMES
         }
         generic_friend_limits = {10: friend_level10_limit, 20: friend_level20_limit}
         for tier, value in generic_friend_limits.items():

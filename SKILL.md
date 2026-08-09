@@ -126,15 +126,14 @@ Content-Type: application/json
   game you did not start.
 - `friend_level10_limit`/`friend_level20_limit` (each optional,
   integers, default `2` and `1`) set this game's "phone a friend"
-  budget for whichever side ends up `"api-user"`, for both engines at
+  budget for whichever side ends up `"api-user"`, for every engine at
   once — see section 4.5. Each engine's quota is tracked separately,
-  not pooled: `gnuchess_friend_level10_limit`/
-  `gnuchess_friend_level20_limit` and
-  `stockfish_friend_level10_limit`/`stockfish_friend_level20_limit`
-  (each optional) set one engine's budget specifically, winning over
-  the generic fields for that engine — use them if the user wants,
-  say, more Stockfish hints than GNU Chess hints. Any of these six
-  fields can be `-1` instead of a number, which makes that tier
+  not pooled: `friend_limits` (optional, an object of the form
+  `{engine_name: {tier: limit}}`) sets one or more engines' budgets
+  specifically, winning over the generic fields for whichever
+  engine/tier it names — use it if the user wants, say, more
+  Stockfish hints than GNU Chess hints. Any limit, generic or
+  per-engine, can be `-1` instead of a number, which makes that tier
   unlimited (never runs out) for the game. Like the name fields, none
   of these carry over: every new game gets the defaults unless you
   set them here, and usage always starts at zero. Raise them if the
@@ -452,10 +451,9 @@ Content-Type: application/json
 - `engine` (optional, `"gnuchess"` or `"stockfish"`, default
   `"gnuchess"`) picks which engine to ask.
 - Each level has its own budget for the whole game, per engine, set at
-  game start (`friend_level10_limit`/`friend_level20_limit` for both
-  engines at once, or the per-engine
-  `gnuchess_friend_level*_limit`/`stockfish_friend_level*_limit`
-  fields, section 1 — default `2` for level 10, `1` for level 20).
+  game start (`friend_level10_limit`/`friend_level20_limit` for every
+  engine at once, or the per-engine `friend_limits` field, section 1
+  — default `2` for level 10, `1` for level 20).
   GNU Chess hints and Stockfish hints draw on independent quotas, not
   a shared one — asking GNU Chess for a hint does not use up your
   Stockfish budget, and vice versa. Each side has its own budget too,

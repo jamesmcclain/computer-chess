@@ -40,22 +40,18 @@ API_DOC = {
                      "black_name": "optional, up to 40 chars",
                      "friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
                                               f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
-                                              f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]]}, both engines",
+                                              f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]]}, every engine",
                      "friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
                                               f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
-                                              f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]}, both engines",
-                     "gnuchess_friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
-                                                       f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
-                                                       "wins over friend_level10_limit for gnuchess",
-                     "gnuchess_friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
-                                                       f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
-                                                       "wins over friend_level20_limit for gnuchess",
-                     "stockfish_friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
-                                                        f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
-                                                        "wins over friend_level10_limit for stockfish",
-                     "stockfish_friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
-                                                        f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
-                                                        "wins over friend_level20_limit for stockfish"},
+                                              f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]}, every engine",
+                     "friend_limits": "optional, object of the form "
+                                       "{engine_name: {tier: limit}} — e.g. "
+                                       f'{{"stockfish": {{"{FRIEND_LEVELS[0]}": 5}}}}; '
+                                       f"each limit is {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
+                                       f"{FRIEND_LIMIT_UNLIMITED} for unlimited; any engine/tier "
+                                       "named here wins over friend_level10_limit/"
+                                       "friend_level20_limit for that engine and tier only — "
+                                       f"one of {', '.join(ENGINE_NAMES)}"},
             "description": "Start a new game, replacing any game already "
                             "in progress. Both sides can be 'engine'; the "
                             "two engines then play each other, paced one "
@@ -82,19 +78,18 @@ API_DOC = {
                             "POST /api/game/phone-a-friend) — how many "
                             f"level-{FRIEND_LEVELS[0]} and level-{FRIEND_LEVELS[1]} engine hints an "
                             "'api-user' side may ask for over the course "
-                            "of this game, for both engines at once. Each "
+                            "of this game, for every engine at once. Each "
                             "engine's quota is tracked separately, not "
-                            "pooled — 'gnuchess_friend_level10_limit'/"
-                            "'gnuchess_friend_level20_limit' and "
-                            "'stockfish_friend_level10_limit'/"
-                            "'stockfish_friend_level20_limit' set one "
-                            "engine's budget at one tier specifically, and "
-                            "win over the generic fields for that engine, "
-                            "so an 'api-user' side can be given hints from "
-                            "both engines independently. Any of these six "
-                            "limit fields can be set to "
+                            "pooled — 'friend_limits' sets one or more "
+                            "engines' budgets at one or both tiers "
+                            "specifically, and wins over the generic "
+                            "fields for whichever engine/tier it names, so "
+                            "an 'api-user' side can be given hints from "
+                            "every engine independently, no matter how "
+                            "many engines this server supports. Any limit, "
+                            "generic or per-engine, can be set to "
                             f"{FRIEND_LIMIT_UNLIMITED} to make that tier "
-                            "unlimited for that engine (or both engines, "
+                            "unlimited for that engine (or every engine, "
                             "via the generic fields) instead of capped. "
                             "Unlike the level/name settings above, none of "
                             "these are sticky: every new game gets the "
@@ -169,10 +164,8 @@ API_DOC = {
                             "shared one, so an 'api-user' side can use "
                             "both. Set at POST /api/game time (see "
                             "'friend_level10_limit'/'friend_level20_limit' "
-                            "and the per-engine "
-                            "'gnuchess_friend_level*_limit'/"
-                            "'stockfish_friend_level*_limit' fields above; "
-                            "defaults "
+                            "and the per-engine 'friend_limits' field "
+                            "above; defaults "
                             f"{DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]]} and "
                             f"{DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]} respectively, per engine) "
                             "and tracked separately per side, so a "
@@ -303,20 +296,24 @@ def create_api_app(game):
         black_name = body.get("black_name")
         friend_level10_limit = body.get("friend_level10_limit")
         friend_level20_limit = body.get("friend_level20_limit")
-        gnuchess_friend_level10_limit = body.get("gnuchess_friend_level10_limit")
-        gnuchess_friend_level20_limit = body.get("gnuchess_friend_level20_limit")
-        stockfish_friend_level10_limit = body.get("stockfish_friend_level10_limit")
-        stockfish_friend_level20_limit = body.get("stockfish_friend_level20_limit")
+        friend_limits = body.get("friend_limits")
+        try:
+            engine_friend_limits = None
+            if isinstance(friend_limits, dict):
+                engine_friend_limits = {
+                    name: {int(tier): limit for tier, limit in (tiers or {}).items()}
+                    for name, tiers in friend_limits.items()
+                }
+        except (TypeError, ValueError, AttributeError):
+            return error("'friend_limits' must be an object of the form "
+                          "{engine_name: {tier: limit}}")
         try:
             state, engine_move = game.new_game(
                 white, black, level=level, white_level=white_level, black_level=black_level,
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 white_name=white_name, black_name=black_name,
                 friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
-                gnuchess_friend_level10_limit=gnuchess_friend_level10_limit,
-                gnuchess_friend_level20_limit=gnuchess_friend_level20_limit,
-                stockfish_friend_level10_limit=stockfish_friend_level10_limit,
-                stockfish_friend_level20_limit=stockfish_friend_level20_limit,
+                engine_friend_limits=engine_friend_limits,
             )
         except GameError as e:
             return error(str(e))
