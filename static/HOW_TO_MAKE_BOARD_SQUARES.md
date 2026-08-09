@@ -185,6 +185,7 @@ Note: diffusion tiles are not always seamless at the edges. If seams show on an 
 | `mahogany_ash` | `square_mahogany.png` | `square_ash.png` |
 | `metal` | `square_metal_dark.png` | `square_metal_light.png` |
 | `cyberpunk` | `square_cyberpunk_dark.png` | `square_cyberpunk_light.png` |
+| `simple` | `square_simple_dark.png` | `square_simple_light.png` |
 
 ## Related files
 

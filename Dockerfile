@@ -18,12 +18,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PATH="/usr/games:${PATH}"
 
-# gnuchess: the chess engine. It plays the "engine" side of a game (spoken
-#   to over UCI, via `gnuchess --uci`) while python-chess (installed below)
+# gnuchess, stockfish: the two chess engines. Either can play the
+#   "engine" side of a game (spoken to over UCI — `gnuchess --uci` /
+#   `stockfish`), chosen per side, while python-chess (installed below)
 #   is used as the authoritative board/rules/move-legality implementation.
 # python3 / python3-pip: run the Flask REST API + viewer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gnuchess \
+        stockfish \
         python3 \
         python3-pip \
     && rm -rf /var/lib/apt/lists/*

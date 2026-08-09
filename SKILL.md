@@ -1,6 +1,6 @@
 ---
 name: computer-chess
-description: Play chess through the computer-chess REST service, a dockerized GNU Chess server with a JSON API on port 5003 and a board viewer on port 5004. Use this skill when the user wants to start, join, play, watch, or check a game — against GNU Chess, another API user, or a person on the board viewer. It also covers a specific move, the side to move, and the game result. Read this skill before you call the API by hand. It gives the exact endpoints, request and response shapes, and the turn-taking and end-of-game rules for correct play.
+description: Play chess through the computer-chess REST service, a dockerized chess server (GNU Chess and Stockfish, both equally supported) with a JSON API on port 5003 and a board viewer on port 5004. Use this skill when the user wants to start, join, play, watch, or check a game — against an engine, another API user, or a person on the board viewer. It also covers a specific move, the side to move, and the game result. Read this skill before you call the API by hand. It gives the exact endpoints, request and response shapes, and the turn-taking and end-of-game rules for correct play.
 ---
 
 # Playing chess through computer-chess
@@ -31,9 +31,11 @@ Core facts to remember:
   progress.
 - **A side has one of three types.** `"api-user"` (an outside caller
   like you, sending moves through this API), `"web-user"` (a person
-  who clicks the board in the viewer), or `"engine"` (GNU Chess). You
-  always act as `"api-user"`, whichever color you play. Your opponent
-  can be any of the three types — do not assume it is the engine.
+  who clicks the board in the viewer), or `"engine"` (GNU Chess or
+  Stockfish — see `engine_names` in `state`). You always act as
+  `"api-user"`, whichever color you play. Your opponent can be any of
+  the three types — do not assume it is the engine, or, if it is,
+  which engine.
 - **The API has no authentication and no seat reservation.** Whoever
   calls `POST /api/game/move` during a color's turn moves for that
   color. There is no login and no player ID. "Playing white" means
@@ -65,12 +67,18 @@ Core facts to remember:
   analysis go — it stays private while the game is in progress.
   Display name (also in section 2) stays optional.
 - **You can "phone a friend" for a move recommendation, since you are
-  always `"api-user"`.** This asks GNU Chess for its move choice in
+  always `"api-user"`.** This asks an engine for its move choice in
   the current position, without submitting that move or ending your
-  turn. Each game gives you a small budget of level-10 and level-5
-  queries — 1 and 2 by default. See section 4.5.
+  turn. Each game gives you a small budget of level-20 and level-10
+  queries — 1 and 2 by default — tracked separately for GNU Chess and
+  Stockfish, so you can draw on both. See section 4.5.
 - **Once the game ends, a PGN transcript is available.** It folds in
   every move's chat and reasoning. See section 5.1.
+- **`state.eval` is a live Stockfish read on who is winning** — the
+  board viewer's eval bar. It is purely informational, runs on its own
+  separate Stockfish process, and has nothing to do with your side or
+  turn — you do not need to read it to play correctly, and it is not a
+  substitute for your own analysis or `phone_a_friend`. See README.md.
 
 ## 1. Starting a new game
 
@@ -78,7 +86,7 @@ Core facts to remember:
 POST /api/game
 Content-Type: application/json
 
-{"white": "api-user", "black": "engine", "level": 5}
+{"white": "api-user", "black": "engine", "level": 10}
 ```
 
 - `white` and `black` are each `"api-user"`, `"web-user"`, or
@@ -90,18 +98,28 @@ Content-Type: application/json
   - You vs. another API user: `{"white": "api-user", "black": "api-user"}`
   - You vs. a person on the board viewer: set the other side to
     `"web-user"`, for example `{"white": "api-user", "black": "web-user"}`.
-- `level` (optional, `1`-`10`, weakest to strongest, default `5`) sets
-  the difficulty for both sides at once. It matters only for a side
-  that is `"engine"`. `white_level` and `black_level` (each optional,
-  `1`-`10`) set one side's difficulty alone, and win over `level` for
-  that side — use them for two engines at different strengths (see
-  below). Omit a level to keep its last value. `GET /api/engine-levels`
-  lists what each level means. If the user asks for an easier or
-  harder opponent, or names a rough difficulty such as "beginner" or
-  "hard", set the level to match. Do not guess at move quality
-  yourself. You can also change a level at any time, without a new
-  game: `POST /api/game/level {"level": N, "color": "white"}` (omit
+- `level` (optional, `0`-`20`, weakest to strongest, default `10` —
+  Stockfish's own native "Skill Level" scale) sets the difficulty for
+  both sides at once. It matters only for a side that is `"engine"`.
+  `white_level` and `black_level` (each optional, `0`-`20`) set one
+  side's difficulty alone, and win over `level` for that side — use
+  them for two engines at different strengths (see below). Omit a
+  level to keep its last value. `GET /api/engine-levels` returns the
+  scale's bounds. If the user asks for an easier or harder opponent,
+  or names a rough difficulty such as "beginner" or "hard", set the
+  level to match. Do not guess at move quality yourself. You can also
+  change a level at any time, without a new game:
+  `POST /api/game/level {"level": N, "color": "white"}` (omit
   `"color"` to set both sides).
+- `engine` (optional, `"gnuchess"` or `"stockfish"`, default
+  `"gnuchess"`) picks which engine plays both `"engine"` sides at
+  once. `white_engine`/`black_engine` (each optional) pick one side's
+  engine alone, and win over `engine` for that side — use them to pit
+  GNU Chess against Stockfish. Omit to keep the last value. If the
+  user asks for "Stockfish" or "GNU Chess" by name, set this — do not
+  assume either one. You can also change the engine at any time,
+  without a new game: `POST /api/game/engine {"engine": "stockfish",
+  "color": "white"}` (omit `"color"` to set both sides).
 - If `white` is `"engine"` and `black` is not, the engine plays its
   first move at once. The response holds this move in `engine_move`.
   Read it before you do anything else — if you are Black, this is the
@@ -111,13 +129,21 @@ Content-Type: application/json
   every new game starts with no names set. See section 2 to learn
   what a name does, and how to set or change one later, even for a
   game you did not start.
-- `friend_level5_limit`/`friend_level10_limit` (each optional,
+- `friend_level10_limit`/`friend_level20_limit` (each optional,
   integers, default `2` and `1`) set this game's "phone a friend"
-  budget for whichever side ends up `"api-user"` — see section 4.5.
-  Like the name fields, these do not carry over: every new game gets
-  the defaults unless you set them here, and usage always starts at
-  zero. Raise them if the user wants more hints, or set either to `0`
-  to turn that tier off.
+  budget for whichever side ends up `"api-user"`, for every engine at
+  once — see section 4.5. Each engine's quota is tracked separately,
+  not pooled: `friend_limits` (optional, an object of the form
+  `{engine_name: {tier: limit}}`) sets one or more engines' budgets
+  specifically, winning over the generic fields for whichever
+  engine/tier it names — use it if the user wants, say, more
+  Stockfish hints than GNU Chess hints. Any limit, generic or
+  per-engine, can be `-1` instead of a number, which makes that tier
+  unlimited (never runs out) for the game. Like the name fields, none
+  of these carry over: every new game gets the defaults unless you
+  set them here, and usage always starts at zero. Raise them if the
+  user wants more hints, set one to `-1` if they want no cap at all,
+  or set any to `0` to turn that tier off for that engine.
 - **Two engines can play each other, for a user who wants to watch
   instead of play.** Set both `white` and `black` to `"engine"`, with
   different `white_level`/`black_level` if you want. Neither side
@@ -330,7 +356,7 @@ Response:
 ```json
 {
   "move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"},
-  "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine", "name": "GNU Chess"} ,
+  "engine_move": {"ply": 2, "color": "black", "uci": "d7d5", "san": "d5", "by": "engine", "name": "Stockfish"} ,
   "state": {...}
 }
 ```
@@ -411,7 +437,7 @@ REST API (port 5003) when you act on the game.
 
 ### 4.5 Phoning a friend
 
-You can ask GNU Chess for its move choice in the current position,
+You can ask an engine for its move choice in the current position,
 without submitting that move. Use it as a hint for a hard decision,
 not as a substitute for choosing and submitting your own move
 (section 4.1, steps 4-5). It is available only to you, the
@@ -421,18 +447,25 @@ not as a substitute for choosing and submitting your own move
 POST /api/game/phone-a-friend
 Content-Type: application/json
 
-{"level": 10}
+{"level": 20, "engine": "stockfish"}
 ```
 
-- `level` is `5` or `10` — no other value. Level 10 searches deeper
-  and gives a stronger recommendation. Level 5 is faster and weaker.
-  Pick level 10 for a critical, hard-to-read position. Level 5 is
-  enough for a routine check.
-- Each level has its own budget for the whole game, set at game start
-  (`friend_level5_limit`/`friend_level10_limit`, section 1 — default
-  `2` for level 5, `1` for level 10). Each side has its own budget,
+- `level` is `10` or `20` — no other value. Level 20 gives a stronger
+  recommendation. Level 10 is weaker. Pick level 20 for a critical,
+  hard-to-read position. Level 10 is enough for a routine check.
+- `engine` (optional, `"gnuchess"` or `"stockfish"`, default
+  `"gnuchess"`) picks which engine to ask.
+- Each level has its own budget for the whole game, per engine, set at
+  game start (`friend_level10_limit`/`friend_level20_limit` for every
+  engine at once, or the per-engine `friend_limits` field, section 1
+  — default `2` for level 10, `1` for level 20).
+  GNU Chess hints and Stockfish hints draw on independent quotas, not
+  a shared one — asking GNU Chess for a hint does not use up your
+  Stockfish budget, and vice versa. Each side has its own budget too,
   so in a two-`"api-user"` game your budget does not depend on your
-  opponent's.
+  opponent's. If the user set a budget to `-1` (unlimited), queries at
+  that tier for that engine never run out — `advice.remaining` (and
+  `state.phone_a_friend`) shows `-1` for it too.
 - Calling this does **not** change the board, end your turn, or count
   as your move. You must still submit your own move with
   `POST /api/game/move` (section 4.2) after, whether or not you take
@@ -442,7 +475,7 @@ Response:
 
 ```json
 {
-  "advice": {"level": 10, "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},
+  "advice": {"level": 20, "engine": "stockfish", "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},
   "state": {...}
 }
 ```
@@ -453,25 +486,32 @@ Response:
   total, and what remains.
 - `state` is the full, current game state — unchanged by this call,
   except `state.phone_a_friend`. That field always shows both sides'
-  budget and usage at both levels, whether or not you have called
-  this endpoint yet:
+  budget and usage at both levels, broken out per engine, whether or
+  not you have called this endpoint yet:
   ```json
   "phone_a_friend": {
-    "limits": {"level_5": 2, "level_10": 1},
-    "white": {"used": {"level_5": 0, "level_10": 1}, "remaining": {"level_5": 2, "level_10": 0}},
-    "black": {"used": {"level_5": 0, "level_10": 0}, "remaining": {"level_5": 2, "level_10": 1}}
+    "limits": {"gnuchess": {"level_10": 2, "level_20": 1}, "stockfish": {"level_10": 2, "level_20": 1}},
+    "white": {
+      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
+      "stockfish": {"used": {"level_10": 0, "level_20": 1}, "remaining": {"level_10": 2, "level_20": 0}}
+    },
+    "black": {
+      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
+      "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
+    }
   }
   ```
 - `400` means one of these:
   - it was not your turn
   - your side was not `"api-user"` (this will not happen — you are
     always `"api-user"`)
-  - `level` was not `5` or `10`
-  - you had no queries left at that level
+  - `level` was not `10` or `20`
+  - `engine` was not a valid engine name
+  - you had no queries left at that level for that engine
 
-  Read the `error` field. If you are out of budget at one level, try
-  the other level, if you still have queries there, or decide on your
-  own.
+  Read the `error` field. If you are out of budget at one level for
+  one engine, try the other level, the other engine (if you still have
+  queries there), or decide on your own.
 - Using this is optional. Call it only when it will truly help, in a
   hard or unclear position — not on every move, since your budget is
   small by design. When you use it, mention to the user that you
@@ -498,9 +538,10 @@ the move history yourself.
   | `draw_claimable_50_moves`                 | Draw claimable (50-move rule reached)       |
   | `draw_claimable_threefold_repetition`     | Draw claimable (threefold repetition)       |
   | `resigned`                                | A side resigned                             |
+  | `aborted`                                 | Someone ended the game early, no winner (e.g. the board viewer's Restart button) |
 
-  `state.winner` is `"white"`, `"black"`, or `null` (a draw, or no
-  result yet). On checkmate or resignation, this field names the
+  `state.winner` is `"white"`, `"black"`, or `null` (a draw, an abort,
+  or no result yet). On checkmate or resignation, this field names the
   winner directly — do not compute it yourself.
 
 - Once `game_over` is `true`, `POST /api/game/move` starts to return
@@ -528,8 +569,8 @@ GET /api/game/transcript
 ```
 
 - Returns raw PGN text, not JSON: metadata as tag pairs at the top
-  (players, result, engine levels where relevant, how the game
-  ended), then the move list.
+  (players, result, engine names and levels where relevant, how the
+  game ended), then the move list.
 - Every move's `chat` (section 2) and any private `reasoning` you
   recorded for it (also section 2) appear as a comment on that move.
   This is the only place `reasoning` is ever exposed — once the game

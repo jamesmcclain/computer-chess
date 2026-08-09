@@ -70,6 +70,23 @@
         "material": "frosted pale tech acrylic with iridescent filigree",
         "read": "Frosted pale gray-white tech acrylic with soft pink and cyan circuit filigree and a light holographic sheen. Brighter, gentler twin to the dark cyberpunk panel."
       }
+    },
+    {
+      "id": "simple",
+      "label": "Simple",
+      "theme": "plain flat",
+      "dark": {
+        "path": "square_simple_dark.png",
+        "role": "dark",
+        "material": "flat dark tone",
+        "read": "Plain flat dark square with no texture or grain."
+      },
+      "light": {
+        "path": "square_simple_light.png",
+        "role": "light",
+        "material": "flat light tone",
+        "read": "Plain flat light square with no texture or grain."
+      }
     }
   ]
 }

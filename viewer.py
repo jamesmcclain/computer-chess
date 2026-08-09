@@ -19,11 +19,12 @@ Flask's built-in dev server out of the box.
 This page is not purely read-only: when no game is in progress
 (including after a previous one has finished), it offers a form to
 start one, letting a person pick each side's type — 'api-user' (an
-outside caller, e.g. an agent), 'engine' (GNU Chess), or 'web-user'
-(play by clicking this page) — plus GNU Chess's difficulty if either
-side is 'engine'. While a game is running, if it is a 'web-user'
-side's turn, this page also lets a person click a piece and a
-destination square to submit that side's move.
+outside caller, e.g. an agent), 'engine' (GNU Chess or Stockfish), or
+'web-user' (play by clicking this page) — plus, if either side is
+'engine', which engine plays it and its difficulty. While a game is
+running, if it is a 'web-user' side's turn, this page also lets a
+person click a piece and a destination square to submit that side's
+move.
 
 The `/game/*` routes below exist only so this page's own JS can start
 games and submit moves same-origin, without depending on the REST API's
@@ -45,7 +46,7 @@ import os
 
 from flask import Flask, Response, jsonify, render_template_string, request, stream_with_context
 
-from game import GameError, describe_levels
+from game import EVAL_QUALITIES, GameError, describe_eval_qualities, describe_levels
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -238,7 +239,36 @@ PAGE = """<!doctype html>
      frame — the practical benefit a heavier engine like three.js would
      bring here, without standing up a WebGL context for what is
      fundamentally a flat 2D grid of images. */
+  /* align-items: stretch (the default) is required here, not center —
+     #board-wrap's own "flex: 1 1 auto" only grows it to fill #board-row's
+     height if #board-row lets it stretch that far; align-items: center
+     would instead size #board-wrap to its (initially empty) content, and
+     since fitBoard() measures #board-wrap's own height to size the board,
+     that shrinks the whole board down to its 160px floor. */
+  #board-row { display: flex; justify-content: center; gap: 0.7rem; width: 100%; flex: 1 1 auto; min-height: 0; }
   #board-wrap { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; width: 100%; min-height: 0; }
+
+  /* ---- eval bar -----------------------------------------------------
+     A vertical bar showing the eval-bar engine's live Stockfish
+     assessment of the position, White's share on top (light) growing
+     down over Black's share (dark) — mirrors how a chess.com/lichess
+     eval bar reads. Sized in JS (fitBoard) to match the board's own
+     height, since #board is sized there too. */
+  #eval-bar-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.3rem; flex: 0 0 auto; }
+  #eval-bar {
+    width: 1.1rem; border-radius: 4px; overflow: hidden; background: #1a1a1a;
+    border: 1px solid var(--panel-border); display: flex; flex-direction: column;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  }
+  #eval-bar-fill {
+    width: 100%; background: #f0d9b5; margin-top: auto; /* grows up from the bottom = Black's share */
+    transition: height 0.4s ease, background 0.4s ease;
+  }
+  #eval-bar-label {
+    font-size: 0.68rem; color: #999; font-variant-numeric: tabular-nums;
+    min-width: 2.6em; text-align: center;
+  }
+  #eval-quality-desc { color: #888; font-size: 0.68rem; line-height: 1.35; min-height: 2.6em; }
   #board {
     position: relative;
     display: grid;
@@ -366,21 +396,22 @@ PAGE = """<!doctype html>
   <div id="start-panel">
     <h2>Start a new game</h2>
     <div class="start-row"><label>White</label><select id="start-white"></select></div>
+    <div class="start-row" id="start-white-engine-row" style="display:none;">
+      <label>White engine</label><select id="start-white-engine"></select>
+    </div>
     <div class="start-row" id="start-white-level-row" style="display:none;">
       <label>White level</label><select id="start-white-level"></select>
     </div>
     <div class="start-row"><label>Black</label><select id="start-black"></select></div>
+    <div class="start-row" id="start-black-engine-row" style="display:none;">
+      <label>Black engine</label><select id="start-black-engine"></select>
+    </div>
     <div class="start-row" id="start-black-level-row" style="display:none;">
       <label>Black level</label><select id="start-black-level"></select>
     </div>
     <div class="start-row" id="start-friend-row" style="display:none;">
       <label>Friend calls</label>
-      <span class="friend-inputs">
-        <input type="number" id="start-friend-l10" min="0" max="50" step="1" title="Level-10 phone-a-friend queries allowed per api-user side">
-        <span class="friend-inputs-tag">&times; L10</span>
-        <input type="number" id="start-friend-l5" min="0" max="50" step="1" title="Level-5 phone-a-friend queries allowed per api-user side">
-        <span class="friend-inputs-tag">&times; L5</span>
-      </span>
+      <span class="friend-inputs" id="start-friend-engines"></span>
     </div>
     <button id="start-btn">Start game</button>
     <div id="start-error"></div>
@@ -420,6 +451,12 @@ PAGE = """<!doctype html>
         <div class="ctrl-row"><label>Black</label><select id="piece-black"></select></div>
       </div>
     </div>
+
+    <div class="ctrl-group">
+      <div class="ctrl-title">Eval bar</div>
+      <select id="eval-quality-sel"></select>
+      <div id="eval-quality-desc"></div>
+    </div>
   </div>
 
   <div id="players-bar">
@@ -430,7 +467,13 @@ PAGE = """<!doctype html>
 
   <button id="game-control-btn"></button>
 
-  <div id="board-wrap"><div id="board"></div><div id="promo-picker"></div></div>
+  <div id="board-row">
+    <div id="eval-bar-wrap" title="">
+      <div id="eval-bar"><div id="eval-bar-fill"></div></div>
+      <div id="eval-bar-label"></div>
+    </div>
+    <div id="board-wrap"><div id="board"></div><div id="promo-picker"></div></div>
+  </div>
   <div id="meta"></div>
   <div id="chat-panel">
     <div class="chat-title">Chat</div>
@@ -449,8 +492,13 @@ const FILES = "abcdefgh";
 
 const PLAYER_TYPES = [
   { id: "api-user", label: "API user" },
-  { id: "engine", label: "Engine (GNU Chess)" },
+  { id: "engine", label: "Engine" },
   { id: "web-user", label: "Web user (you)" },
+];
+
+const ENGINE_TYPES = [
+  { id: "gnuchess", label: "GNU Chess" },
+  { id: "stockfish", label: "Stockfish" },
 ];
 
 const boardWrapEl = document.getElementById("board-wrap");
@@ -469,6 +517,14 @@ const chatInputRowEl = document.getElementById("chat-input-row");
 const chatInputEl = document.getElementById("chat-input");
 const gameControlBtnEl = document.getElementById("game-control-btn");
 const transcriptBtnEl = document.getElementById("transcript-btn");
+const evalBarWrapEl = document.getElementById("eval-bar-wrap");
+const evalBarEl = document.getElementById("eval-bar");
+const evalBarFillEl = document.getElementById("eval-bar-fill");
+const evalBarLabelEl = document.getElementById("eval-bar-label");
+const evalQualitySelEl = document.getElementById("eval-quality-sel");
+const evalQualityDescEl = document.getElementById("eval-quality-desc");
+
+let evalQualities = []; // [{id, label, description}, ...], loaded from /game/eval-qualities
 
 // cellEls[r][c] = the .sq div. lastCodes[r][c] = piece code last painted
 // there ("wN", etc.) or null. Built once; reused across every update so
@@ -500,12 +556,6 @@ const ARROW_FADE_MS = 60000;
 // chat panel, so re-renders only add the entries not yet shown — see
 // updateChatPanel().
 let lastChatMoveLogLength = 0;
-
-// Set by the "Restart" button (see updateGameControls()) to force the
-// start-game form open even though a game is still in progress — plain
-// `!state.started || state.game_over` isn't enough for that case. Cleared
-// once a new game actually starts (see initStartPanel()'s start handler).
-let forceStartPanel = false;
 
 // ---------------------------------------------------------------------
 // Style state: persisted in localStorage so it's remembered per-browser
@@ -931,14 +981,14 @@ function render(state) {
   clearSelection(); // any server-pushed state invalidates a local selection
 
   // Offer the start-game form whenever there's no game to watch — never
-  // started, or the last one already finished — or when the Restart
-  // button forced it open early (see doRestart()).
-  const needsStart = !state.started || state.game_over || forceStartPanel;
+  // started, or the last one already finished (including a Restart —
+  // see doRestart(), which ends the running game outright via
+  // POST /game/abort before this ever needs to distinguish "finished"
+  // from "still going").
+  const needsStart = !state.started || state.game_over;
   startPanelEl.style.display = needsStart ? "flex" : "none";
-  // The transcript button tracks game_over specifically (not needsStart —
-  // forceStartPanel from the Restart button shouldn't show it, since that
-  // game hasn't actually ended). It disappears again the moment a new
-  // game starts, since that flips game_over back to false.
+  // Disappears again the moment a new game starts, since that flips
+  // game_over back to false.
   transcriptBtnEl.style.display = (state.started && state.game_over) ? "inline-block" : "none";
 
   if (!state.started) {
@@ -948,6 +998,7 @@ function render(state) {
     moveArrowLineEl = null;
     moveArrowHeadEl = null;
     boardWrapEl.style.display = "none";
+    evalBarWrapEl.style.display = "none";
     playersBarEl.style.display = "none";
     gameControlBtnEl.style.display = "none";
     chatPanelEl.style.display = "none";
@@ -962,6 +1013,7 @@ function render(state) {
 
   boardWrapEl.style.display = "flex";
   if (!cellEls) buildBoard();
+  updateEvalBar(state);
 
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
@@ -1007,13 +1059,24 @@ function sideLabel(state, color) {
   const name = state.player_names && state.player_names[color];
   let typeLabel = type;
   if (type === "engine" && state.engine_levels) {
-    typeLabel = type + " (level " + state.engine_levels[color] + ")";
+    const engineName = state.engine_names && state.engine_names[color];
+    const engineLabel = (ENGINE_TYPES.find(e => e.id === engineName) || {}).label || engineName || type;
+    typeLabel = engineLabel + " (level " + state.engine_levels[color] + ")";
   } else if (type === "api-user" && state.phone_a_friend) {
     const f = state.phone_a_friend[color];
     if (f) {
-      typeLabel = type + " (friend: " + f.remaining.level_10 + "/" +
-        state.phone_a_friend.limits.level_10 + " L10, " +
-        f.remaining.level_5 + "/" + state.phone_a_friend.limits.level_5 + " L5 left)";
+      // Each engine has its own independent quota (see phone_a_friend()
+      // in game.py) — show both, e.g. "GNU Chess 1/1 L20, Stockfish inf L20".
+      // A limit of -1 (FRIEND_LIMIT_UNLIMITED) means that tier has no cap.
+      const fmtTier = (remaining, limit) => limit === -1 ? "inf" : (remaining + "/" + limit);
+      const perEngine = ENGINE_TYPES.map(e => {
+        const eng = f[e.id];
+        const limits = state.phone_a_friend.limits[e.id];
+        if (!eng || !limits) return null;
+        return e.label + " " + fmtTier(eng.remaining.level_20, limits.level_20) + " L20, " +
+          fmtTier(eng.remaining.level_10, limits.level_10) + " L10";
+      }).filter(Boolean).join("; ");
+      typeLabel = type + (perEngine ? " (friend: " + perEngine + ")" : "");
     }
   }
   return name ? name + " \\u2014 " + typeLabel : typeLabel;
@@ -1128,10 +1191,18 @@ async function doResign(color) {
   }
 }
 
-function doRestart() {
-  if (!confirm("Start a new game now? This ends the current one for everyone watching.")) return;
-  forceStartPanel = true;
-  startPanelEl.style.display = "flex";
+async function doRestart() {
+  if (!confirm("Restart now? This ends the current game for everyone watching.")) return;
+  try {
+    await fetch("/game/abort", { method: "POST" });
+    // The game-over state (and the start panel it brings back — see
+    // render()) arrives through the SSE stream like any other change;
+    // this call is what actually stops an engine-vs-engine match from
+    // continuing to play while the new-game form is being filled out.
+  } catch (e) {
+    statusEl.textContent = "Could not reach the server to restart.";
+    return;
+  }
   startPanelEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
@@ -1150,9 +1221,94 @@ function fitBoard() {
   const size = Math.max(160, Math.floor(Math.min(rect.width, rect.height)) - 8);
   boardEl.style.width = size + "px";
   boardEl.style.height = size + "px";
+  evalBarEl.style.height = size + "px"; // eval bar always matches the board's own height
 }
 new ResizeObserver(fitBoard).observe(boardWrapEl);
 window.addEventListener("resize", fitBoard);
+
+// ---------------------------------------------------------------------
+// Eval bar — a live Stockfish read on who is winning, from its own
+// dedicated engine process (see game.py's ChessGame._ensure_eval_engine)
+// entirely separate from any engine playing a side or answering a
+// phone-a-friend query. state.eval is {"quality", "pov", "score_cp",
+// "mate", "pending", "error"} — see GET /api/game in README.md.
+// ---------------------------------------------------------------------
+
+// Rough win-probability curve (the same shape chess sites use for their
+// eval bars): centipawns -> White's share of the bar, 0..1. Not a
+// calibrated probability, just a reasonable squashing function so a
+// won position reads as "mostly full" rather than swinging wildly.
+function whiteShareFromCp(scoreCp) {
+  return 1 / (1 + Math.pow(10, -scoreCp / 400));
+}
+
+function updateEvalBar(state) {
+  const ev = state.eval;
+  if (!ev || ev.quality === "off") {
+    evalBarWrapEl.style.display = "none";
+    return;
+  }
+  evalBarWrapEl.style.display = "flex";
+
+  const haveMate = ev.mate !== null && ev.mate !== undefined;
+  const haveScore = ev.score_cp !== null && ev.score_cp !== undefined;
+  let whiteShare = 0.5; // no data yet (right after a new game) — show a neutral bar
+  if (haveMate) whiteShare = ev.mate > 0 ? 1 : 0;
+  else if (haveScore) whiteShare = whiteShareFromCp(ev.score_cp);
+  evalBarFillEl.style.height = (whiteShare * 100) + "%";
+
+  let label = "\\u2026"; // ellipsis: still computing the first evaluation
+  if (ev.error) label = "err";
+  else if (haveMate) label = "M" + Math.abs(ev.mate);
+  else if (haveScore) {
+    const pawns = ev.score_cp / 100;
+    label = (pawns >= 0 ? "+" : "") + pawns.toFixed(1);
+  }
+  evalBarLabelEl.textContent = label;
+  evalBarWrapEl.title = ev.error ? ("Eval bar error: " + ev.error)
+    : ev.pending ? "Evaluating\\u2026 (showing the last position's read)"
+    : "Stockfish eval, White's perspective. Positive favors White.";
+
+  // Reflect the current quality in the selector — it's a sticky,
+  // server-side setting (see POST /game/eval-quality), so another tab
+  // or an API caller changing it should show up here too.
+  if (evalQualitySelEl.value !== ev.quality) {
+    evalQualitySelEl.value = ev.quality;
+    updateEvalQualityDesc(ev.quality);
+  }
+}
+
+function updateEvalQualityDesc(qualityId) {
+  const q = evalQualities.find(q => q.id === qualityId);
+  evalQualityDescEl.textContent = q ? q.description : "";
+}
+
+async function initEvalControls() {
+  try {
+    const res = await fetch("/game/eval-qualities");
+    const data = await res.json();
+    evalQualities = data.qualities || [];
+    fillSelect(evalQualitySelEl, evalQualities, data.default);
+  } catch (e) {
+    evalQualities = [];
+  }
+  updateEvalQualityDesc(evalQualitySelEl.value);
+  evalQualitySelEl.addEventListener("change", async () => {
+    const quality = evalQualitySelEl.value;
+    updateEvalQualityDesc(quality);
+    try {
+      await fetch("/game/eval-quality", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quality }),
+      });
+      // The new eval (or the "off" bar-hide) arrives through the SSE stream.
+    } catch (e) {
+      // Best-effort — the selector already reflects the intended choice;
+      // the next state push will correct it if the request didn't land.
+    }
+  });
+}
 
 // ---------------------------------------------------------------------
 // Start-a-new-game panel
@@ -1160,29 +1316,63 @@ window.addEventListener("resize", fitBoard);
 async function initStartPanel() {
   const whiteSel = document.getElementById("start-white");
   const blackSel = document.getElementById("start-black");
+  const whiteEngineRow = document.getElementById("start-white-engine-row");
+  const blackEngineRow = document.getElementById("start-black-engine-row");
+  const whiteEngineSel = document.getElementById("start-white-engine");
+  const blackEngineSel = document.getElementById("start-black-engine");
   const whiteLevelRow = document.getElementById("start-white-level-row");
   const blackLevelRow = document.getElementById("start-black-level-row");
   const whiteLevelSel = document.getElementById("start-white-level");
   const blackLevelSel = document.getElementById("start-black-level");
   const friendRow = document.getElementById("start-friend-row");
-  const friendL10 = document.getElementById("start-friend-l10");
-  const friendL5 = document.getElementById("start-friend-l5");
+  const friendEnginesEl = document.getElementById("start-friend-engines");
   const errEl = document.getElementById("start-error");
   const startBtn = document.getElementById("start-btn");
 
   fillSelect(whiteSel, PLAYER_TYPES, "web-user");
   fillSelect(blackSel, PLAYER_TYPES, "engine");
-  // Defaults mirror game.py's DEFAULT_FRIEND_LIMITS (level 10: 1, level 5: 2).
-  friendL10.value = "1";
-  friendL5.value = "2";
+  fillSelect(whiteEngineSel, ENGINE_TYPES, "gnuchess");
+  fillSelect(blackEngineSel, ENGINE_TYPES, "gnuchess");
 
-  // Each side's level control is independent: an engine-vs-engine game
-  // can (and often should, to be an interesting game to watch) pit two
-  // different difficulties against each other. The "phone a friend"
-  // budget only matters if at least one side will be 'api-user' — it's
-  // set once for the whole game and tracked separately per side (see
+  // One independent L20/L10 budget pair per engine, so each engine's
+  // phone-a-friend quota can be set separately (see game.py's
+  // ENGINE_NAMES / DEFAULT_FRIEND_LIMITS — level 20: 1, level 10: 2 by
+  // default, same starting point for every engine). Built dynamically
+  // from ENGINE_TYPES so this scales to however many engines the server
+  // supports, not just two.
+  const friendInputs = {}; // engine id -> { l20, l10 }
+  ENGINE_TYPES.forEach((eng) => {
+    const l20 = document.createElement("input");
+    l20.type = "number"; l20.min = "-1"; l20.max = "50"; l20.step = "1";
+    l20.title = "Level-20 phone-a-friend queries allowed per api-user side, " + eng.label + " (-1 = unlimited)";
+    l20.value = "1";
+    const l20Tag = document.createElement("span");
+    l20Tag.className = "friend-inputs-tag";
+    l20Tag.textContent = "\\u00d7 L20";
+    const l10 = document.createElement("input");
+    l10.type = "number"; l10.min = "-1"; l10.max = "50"; l10.step = "1";
+    l10.title = "Level-10 phone-a-friend queries allowed per api-user side, " + eng.label + " (-1 = unlimited)";
+    l10.value = "2";
+    const l10Tag = document.createElement("span");
+    l10Tag.className = "friend-inputs-tag";
+    l10Tag.textContent = "\\u00d7 L10";
+    const engTag = document.createElement("span");
+    engTag.className = "friend-inputs-tag";
+    engTag.textContent = eng.label + ":";
+    friendEnginesEl.append(engTag, l20, l20Tag, l10, l10Tag);
+    friendInputs[eng.id] = { l20, l10 };
+  });
+
+  // Each side's engine and level controls are independent: an
+  // engine-vs-engine game can (and often should, to be an interesting
+  // game to watch) pit two different engines and/or difficulties
+  // against each other. The "phone a friend" budget only matters if at
+  // least one side will be 'api-user' — it's set once for the whole
+  // game and tracked separately per side (see
   // POST /api/game/phone-a-friend).
   function refreshLevelVisibility() {
+    whiteEngineRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
+    blackEngineRow.style.display = blackSel.value === "engine" ? "flex" : "none";
     whiteLevelRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
     blackLevelRow.style.display = blackSel.value === "engine" ? "flex" : "none";
     const anyApiUser = whiteSel.value === "api-user" || blackSel.value === "api-user";
@@ -1192,28 +1382,41 @@ async function initStartPanel() {
   blackSel.addEventListener("change", refreshLevelVisibility);
   refreshLevelVisibility();
 
-  const fallbackLevels = Array.from({ length: 10 }, (_, i) => ({ id: String(i + 1), label: "Level " + (i + 1) }));
+  const fallbackLevels = Array.from({ length: 21 }, (_, i) => ({ id: String(i), label: "Level " + i }));
   try {
     const res = await fetch("/game/engine-levels");
     const data = await res.json();
-    const options = (data.levels || []).map(l => ({ id: String(l.level), label: "Level " + l.level }));
-    const defaultId = String(data.default || 5);
+    const min = data.min ?? 0, max = data.max ?? 20;
+    const options = Array.from({ length: max - min + 1 }, (_, i) => ({ id: String(min + i), label: "Level " + (min + i) }));
+    const defaultId = String(data.default ?? 10);
     fillSelect(whiteLevelSel, options.length ? options : fallbackLevels, defaultId);
     fillSelect(blackLevelSel, options.length ? options : fallbackLevels, defaultId);
   } catch (e) {
-    fillSelect(whiteLevelSel, fallbackLevels, "5");
-    fillSelect(blackLevelSel, fallbackLevels, "5");
+    fillSelect(whiteLevelSel, fallbackLevels, "10");
+    fillSelect(blackLevelSel, fallbackLevels, "10");
   }
 
   startBtn.addEventListener("click", async () => {
     errEl.textContent = "";
     startBtn.textContent = "Starting\\u2026";
     const body = { white: whiteSel.value, black: blackSel.value };
-    if (whiteSel.value === "engine") body.white_level = parseInt(whiteLevelSel.value, 10);
-    if (blackSel.value === "engine") body.black_level = parseInt(blackLevelSel.value, 10);
+    if (whiteSel.value === "engine") {
+      body.white_level = parseInt(whiteLevelSel.value, 10);
+      body.white_engine = whiteEngineSel.value;
+    }
+    if (blackSel.value === "engine") {
+      body.black_level = parseInt(blackLevelSel.value, 10);
+      body.black_engine = blackEngineSel.value;
+    }
     if (whiteSel.value === "api-user" || blackSel.value === "api-user") {
-      if (friendL10.value !== "") body.friend_level10_limit = parseInt(friendL10.value, 10);
-      if (friendL5.value !== "") body.friend_level5_limit = parseInt(friendL5.value, 10);
+      const friendLimits = {};
+      Object.entries(friendInputs).forEach(([engId, { l20, l10 }]) => {
+        const tiers = {};
+        if (l20.value !== "") tiers["20"] = parseInt(l20.value, 10);
+        if (l10.value !== "") tiers["10"] = parseInt(l10.value, 10);
+        if (Object.keys(tiers).length) friendLimits[engId] = tiers;
+      });
+      if (Object.keys(friendLimits).length) body.friend_limits = friendLimits;
     }
     try {
       const res = await fetch("/game/start", {
@@ -1224,10 +1427,9 @@ async function initStartPanel() {
       const data = await res.json();
       if (!res.ok) {
         errEl.textContent = data.error || "Could not start the game.";
-      } else {
-        forceStartPanel = false; // a real new game now exists; stop forcing the panel open
       }
-      // On success, the new state arrives through the SSE stream.
+      // On success, the new state arrives through the SSE stream, which
+      // naturally hides the start panel again (state.started/game_over).
     } catch (e) {
       errEl.textContent = "Could not reach the server.";
     } finally {
@@ -1249,6 +1451,7 @@ async function boot() {
   }
   initControls();
   await initStartPanel();
+  await initEvalControls();
   fitBoard();
   startFeed();
 }
@@ -1354,6 +1557,22 @@ def create_viewer_app(game):
     def game_engine_levels():
         return jsonify(describe_levels())
 
+    @app.get("/game/eval-qualities")
+    def game_eval_qualities():
+        return jsonify(describe_eval_qualities())
+
+    @app.post("/game/eval-quality")
+    def game_eval_quality():
+        body = request.get_json(silent=True) or {}
+        quality = body.get("quality")
+        if not quality:
+            return _error(f"'quality' is required (one of: {', '.join(EVAL_QUALITIES)})")
+        try:
+            result = game.set_eval_quality(quality)
+        except GameError as e:
+            return _error(str(e))
+        return jsonify(result)
+
     @app.post("/game/start")
     def game_start():
         body = request.get_json(silent=True) or {}
@@ -1362,12 +1581,28 @@ def create_viewer_app(game):
         level = body.get("level")
         white_level = body.get("white_level")
         black_level = body.get("black_level")
-        friend_level5_limit = body.get("friend_level5_limit")
+        engine = body.get("engine")
+        white_engine = body.get("white_engine")
+        black_engine = body.get("black_engine")
         friend_level10_limit = body.get("friend_level10_limit")
+        friend_level20_limit = body.get("friend_level20_limit")
+        friend_limits = body.get("friend_limits")
+        try:
+            engine_friend_limits = None
+            if isinstance(friend_limits, dict):
+                engine_friend_limits = {
+                    name: {int(tier): limit for tier, limit in (tiers or {}).items()}
+                    for name, tiers in friend_limits.items()
+                }
+        except (TypeError, ValueError, AttributeError):
+            return _error("'friend_limits' must be an object of the form "
+                           "{engine_name: {tier: limit}}")
         try:
             state, engine_move = game.new_game(
                 white, black, level=level, white_level=white_level, black_level=black_level,
-                friend_level5_limit=friend_level5_limit, friend_level10_limit=friend_level10_limit,
+                engine=engine, white_engine=white_engine, black_engine=black_engine,
+                friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
+                engine_friend_limits=engine_friend_limits,
             )
         except GameError as e:
             return _error(str(e))
@@ -1407,6 +1642,20 @@ def create_viewer_app(game):
         player = body.get("player")
         try:
             state = game.resign(player)
+        except GameError as e:
+            return _error(str(e))
+        return jsonify(state=state)
+
+    @app.post("/game/abort")
+    def game_abort():
+        """Backs the page's Restart button when no side is 'web-user'
+        (an engine-vs-engine or api-user/engine game — see the JS'
+        resignColorFor()): immediately ends the running game with no
+        winner, same as the REST API's POST /api/game/abort, so an
+        engine-vs-engine match actually stops instead of continuing to
+        play while the new-game form is filled out."""
+        try:
+            state = game.abort()
         except GameError as e:
             return _error(str(e))
         return jsonify(state=state)
