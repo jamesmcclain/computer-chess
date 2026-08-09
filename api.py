@@ -37,9 +37,9 @@ API_DOC = {
                      "black_engine": f"one of: {', '.join(ENGINE_NAMES)}, optional",
                      "white_name": "optional, up to 40 chars",
                      "black_name": "optional, up to 40 chars",
-                     "friend_level5_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
-                                             f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]]}",
                      "friend_level10_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
+                                              f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]]}",
+                     "friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX}, "
                                               f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]}"},
             "description": "Start a new game, replacing any game already "
                             "in progress. Both sides can be 'engine'; the "
@@ -61,8 +61,8 @@ API_DOC = {
                             "shown in the board viewer and stamped on its "
                             "move-log entries; leave unset to keep "
                             "whatever name was last set for that side (see "
-                            "POST /api/game/name). 'friend_level5_limit'/"
-                            "'friend_level10_limit' set this game's 'phone "
+                            "POST /api/game/name). 'friend_level10_limit'/"
+                            "'friend_level20_limit' set this game's 'phone "
                             "a friend' budget (see "
                             "POST /api/game/phone-a-friend) — how many "
                             f"level-{FRIEND_LEVELS[0]} and level-{FRIEND_LEVELS[1]} engine hints an "
@@ -136,7 +136,7 @@ API_DOC = {
                             "the suggestion. Each of the two levels "
                             f"({FRIEND_LEVELS[0]} and {FRIEND_LEVELS[1]}) has its own budget for the game, "
                             "set at POST /api/game time (see "
-                            "'friend_level5_limit'/'friend_level10_limit' "
+                            "'friend_level10_limit'/'friend_level20_limit' "
                             "above; defaults "
                             f"{DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]]} and "
                             f"{DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]} respectively) "
@@ -259,14 +259,14 @@ def create_api_app(game):
         black_engine = body.get("black_engine")
         white_name = body.get("white_name")
         black_name = body.get("black_name")
-        friend_level5_limit = body.get("friend_level5_limit")
         friend_level10_limit = body.get("friend_level10_limit")
+        friend_level20_limit = body.get("friend_level20_limit")
         try:
             state, engine_move = game.new_game(
                 white, black, level=level, white_level=white_level, black_level=black_level,
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 white_name=white_name, black_name=black_name,
-                friend_level5_limit=friend_level5_limit, friend_level10_limit=friend_level10_limit,
+                friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
             )
         except GameError as e:
             return error(str(e))

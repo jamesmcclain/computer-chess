@@ -352,7 +352,7 @@ class ChessGame:
     def new_game(self, white, black, level=None, white_level=None, black_level=None,
                  engine=None, white_engine=None, black_engine=None,
                  white_name=None, black_name=None,
-                 friend_level5_limit=None, friend_level10_limit=None):
+                 friend_level10_limit=None, friend_level20_limit=None):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
         ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
         (optional, 0-20, Stockfish's native "Skill Level" scale — see
@@ -372,7 +372,7 @@ class ChessGame:
         game starts with neither side named, regardless of what was set
         for the previous game, so leaving one unset means that side has
         no name (see set_name() to name it after the fact).
-        `friend_level5_limit` and `friend_level10_limit` (each optional,
+        `friend_level10_limit` and `friend_level20_limit` (each optional,
         integers, default DEFAULT_FRIEND_LIMITS) set this game's "phone a
         friend" budget — see phone_a_friend() — for the two FRIEND_LEVELS
         tiers. Like the name settings, these are not sticky: every new
@@ -401,10 +401,10 @@ class ChessGame:
             white_name = self._clean_text(white_name, NAME_MAX_LEN)
         if black_name is not None:
             black_name = self._clean_text(black_name, NAME_MAX_LEN)
-        if friend_level5_limit is not None:
-            friend_level5_limit = self._validate_friend_limit(friend_level5_limit, FRIEND_LEVELS[0])
         if friend_level10_limit is not None:
-            friend_level10_limit = self._validate_friend_limit(friend_level10_limit, FRIEND_LEVELS[1])
+            friend_level10_limit = self._validate_friend_limit(friend_level10_limit, FRIEND_LEVELS[0])
+        if friend_level20_limit is not None:
+            friend_level20_limit = self._validate_friend_limit(friend_level20_limit, FRIEND_LEVELS[1])
 
         with self._lock:
             self.board = chess.Board()
@@ -437,8 +437,8 @@ class ChessGame:
             # this game only, if given.
             self.player_names = {"white": white_name, "black": black_name}
             self.friend_limits = {
-                FRIEND_LEVELS[0]: friend_level5_limit if friend_level5_limit is not None else DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]],
-                FRIEND_LEVELS[1]: friend_level10_limit if friend_level10_limit is not None else DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]],
+                FRIEND_LEVELS[0]: friend_level10_limit if friend_level10_limit is not None else DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[0]],
+                FRIEND_LEVELS[1]: friend_level20_limit if friend_level20_limit is not None else DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]],
             }
             self.friend_used = {
                 "white": {FRIEND_LEVELS[0]: 0, FRIEND_LEVELS[1]: 0},

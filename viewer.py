@@ -19,11 +19,12 @@ Flask's built-in dev server out of the box.
 This page is not purely read-only: when no game is in progress
 (including after a previous one has finished), it offers a form to
 start one, letting a person pick each side's type — 'api-user' (an
-outside caller, e.g. an agent), 'engine' (GNU Chess), or 'web-user'
-(play by clicking this page) — plus GNU Chess's difficulty if either
-side is 'engine'. While a game is running, if it is a 'web-user'
-side's turn, this page also lets a person click a piece and a
-destination square to submit that side's move.
+outside caller, e.g. an agent), 'engine' (GNU Chess or Stockfish), or
+'web-user' (play by clicking this page) — plus, if either side is
+'engine', which engine plays it and its difficulty. While a game is
+running, if it is a 'web-user' side's turn, this page also lets a
+person click a piece and a destination square to submit that side's
+move.
 
 The `/game/*` routes below exist only so this page's own JS can start
 games and submit moves same-origin, without depending on the REST API's
@@ -366,20 +367,26 @@ PAGE = """<!doctype html>
   <div id="start-panel">
     <h2>Start a new game</h2>
     <div class="start-row"><label>White</label><select id="start-white"></select></div>
+    <div class="start-row" id="start-white-engine-row" style="display:none;">
+      <label>White engine</label><select id="start-white-engine"></select>
+    </div>
     <div class="start-row" id="start-white-level-row" style="display:none;">
       <label>White level</label><select id="start-white-level"></select>
     </div>
     <div class="start-row"><label>Black</label><select id="start-black"></select></div>
+    <div class="start-row" id="start-black-engine-row" style="display:none;">
+      <label>Black engine</label><select id="start-black-engine"></select>
+    </div>
     <div class="start-row" id="start-black-level-row" style="display:none;">
       <label>Black level</label><select id="start-black-level"></select>
     </div>
     <div class="start-row" id="start-friend-row" style="display:none;">
       <label>Friend calls</label>
       <span class="friend-inputs">
+        <input type="number" id="start-friend-l20" min="0" max="50" step="1" title="Level-20 phone-a-friend queries allowed per api-user side">
+        <span class="friend-inputs-tag">&times; L20</span>
         <input type="number" id="start-friend-l10" min="0" max="50" step="1" title="Level-10 phone-a-friend queries allowed per api-user side">
         <span class="friend-inputs-tag">&times; L10</span>
-        <input type="number" id="start-friend-l5" min="0" max="50" step="1" title="Level-5 phone-a-friend queries allowed per api-user side">
-        <span class="friend-inputs-tag">&times; L5</span>
       </span>
     </div>
     <button id="start-btn">Start game</button>
@@ -449,8 +456,13 @@ const FILES = "abcdefgh";
 
 const PLAYER_TYPES = [
   { id: "api-user", label: "API user" },
-  { id: "engine", label: "Engine (GNU Chess)" },
+  { id: "engine", label: "Engine" },
   { id: "web-user", label: "Web user (you)" },
+];
+
+const ENGINE_TYPES = [
+  { id: "gnuchess", label: "GNU Chess" },
+  { id: "stockfish", label: "Stockfish" },
 ];
 
 const boardWrapEl = document.getElementById("board-wrap");
@@ -1007,13 +1019,15 @@ function sideLabel(state, color) {
   const name = state.player_names && state.player_names[color];
   let typeLabel = type;
   if (type === "engine" && state.engine_levels) {
-    typeLabel = type + " (level " + state.engine_levels[color] + ")";
+    const engineName = state.engine_names && state.engine_names[color];
+    const engineLabel = (ENGINE_TYPES.find(e => e.id === engineName) || {}).label || engineName || type;
+    typeLabel = engineLabel + " (level " + state.engine_levels[color] + ")";
   } else if (type === "api-user" && state.phone_a_friend) {
     const f = state.phone_a_friend[color];
     if (f) {
-      typeLabel = type + " (friend: " + f.remaining.level_10 + "/" +
-        state.phone_a_friend.limits.level_10 + " L10, " +
-        f.remaining.level_5 + "/" + state.phone_a_friend.limits.level_5 + " L5 left)";
+      typeLabel = type + " (friend: " + f.remaining.level_20 + "/" +
+        state.phone_a_friend.limits.level_20 + " L20, " +
+        f.remaining.level_10 + "/" + state.phone_a_friend.limits.level_10 + " L10 left)";
     }
   }
   return name ? name + " \\u2014 " + typeLabel : typeLabel;
@@ -1160,29 +1174,38 @@ window.addEventListener("resize", fitBoard);
 async function initStartPanel() {
   const whiteSel = document.getElementById("start-white");
   const blackSel = document.getElementById("start-black");
+  const whiteEngineRow = document.getElementById("start-white-engine-row");
+  const blackEngineRow = document.getElementById("start-black-engine-row");
+  const whiteEngineSel = document.getElementById("start-white-engine");
+  const blackEngineSel = document.getElementById("start-black-engine");
   const whiteLevelRow = document.getElementById("start-white-level-row");
   const blackLevelRow = document.getElementById("start-black-level-row");
   const whiteLevelSel = document.getElementById("start-white-level");
   const blackLevelSel = document.getElementById("start-black-level");
   const friendRow = document.getElementById("start-friend-row");
+  const friendL20 = document.getElementById("start-friend-l20");
   const friendL10 = document.getElementById("start-friend-l10");
-  const friendL5 = document.getElementById("start-friend-l5");
   const errEl = document.getElementById("start-error");
   const startBtn = document.getElementById("start-btn");
 
   fillSelect(whiteSel, PLAYER_TYPES, "web-user");
   fillSelect(blackSel, PLAYER_TYPES, "engine");
-  // Defaults mirror game.py's DEFAULT_FRIEND_LIMITS (level 10: 1, level 5: 2).
-  friendL10.value = "1";
-  friendL5.value = "2";
+  fillSelect(whiteEngineSel, ENGINE_TYPES, "gnuchess");
+  fillSelect(blackEngineSel, ENGINE_TYPES, "gnuchess");
+  // Defaults mirror game.py's DEFAULT_FRIEND_LIMITS (level 20: 1, level 10: 2).
+  friendL20.value = "1";
+  friendL10.value = "2";
 
-  // Each side's level control is independent: an engine-vs-engine game
-  // can (and often should, to be an interesting game to watch) pit two
-  // different difficulties against each other. The "phone a friend"
-  // budget only matters if at least one side will be 'api-user' — it's
-  // set once for the whole game and tracked separately per side (see
+  // Each side's engine and level controls are independent: an
+  // engine-vs-engine game can (and often should, to be an interesting
+  // game to watch) pit two different engines and/or difficulties
+  // against each other. The "phone a friend" budget only matters if at
+  // least one side will be 'api-user' — it's set once for the whole
+  // game and tracked separately per side (see
   // POST /api/game/phone-a-friend).
   function refreshLevelVisibility() {
+    whiteEngineRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
+    blackEngineRow.style.display = blackSel.value === "engine" ? "flex" : "none";
     whiteLevelRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
     blackLevelRow.style.display = blackSel.value === "engine" ? "flex" : "none";
     const anyApiUser = whiteSel.value === "api-user" || blackSel.value === "api-user";
@@ -1192,28 +1215,35 @@ async function initStartPanel() {
   blackSel.addEventListener("change", refreshLevelVisibility);
   refreshLevelVisibility();
 
-  const fallbackLevels = Array.from({ length: 10 }, (_, i) => ({ id: String(i + 1), label: "Level " + (i + 1) }));
+  const fallbackLevels = Array.from({ length: 21 }, (_, i) => ({ id: String(i), label: "Level " + i }));
   try {
     const res = await fetch("/game/engine-levels");
     const data = await res.json();
-    const options = (data.levels || []).map(l => ({ id: String(l.level), label: "Level " + l.level }));
-    const defaultId = String(data.default || 5);
+    const min = data.min ?? 0, max = data.max ?? 20;
+    const options = Array.from({ length: max - min + 1 }, (_, i) => ({ id: String(min + i), label: "Level " + (min + i) }));
+    const defaultId = String(data.default ?? 10);
     fillSelect(whiteLevelSel, options.length ? options : fallbackLevels, defaultId);
     fillSelect(blackLevelSel, options.length ? options : fallbackLevels, defaultId);
   } catch (e) {
-    fillSelect(whiteLevelSel, fallbackLevels, "5");
-    fillSelect(blackLevelSel, fallbackLevels, "5");
+    fillSelect(whiteLevelSel, fallbackLevels, "10");
+    fillSelect(blackLevelSel, fallbackLevels, "10");
   }
 
   startBtn.addEventListener("click", async () => {
     errEl.textContent = "";
     startBtn.textContent = "Starting\\u2026";
     const body = { white: whiteSel.value, black: blackSel.value };
-    if (whiteSel.value === "engine") body.white_level = parseInt(whiteLevelSel.value, 10);
-    if (blackSel.value === "engine") body.black_level = parseInt(blackLevelSel.value, 10);
+    if (whiteSel.value === "engine") {
+      body.white_level = parseInt(whiteLevelSel.value, 10);
+      body.white_engine = whiteEngineSel.value;
+    }
+    if (blackSel.value === "engine") {
+      body.black_level = parseInt(blackLevelSel.value, 10);
+      body.black_engine = blackEngineSel.value;
+    }
     if (whiteSel.value === "api-user" || blackSel.value === "api-user") {
+      if (friendL20.value !== "") body.friend_level20_limit = parseInt(friendL20.value, 10);
       if (friendL10.value !== "") body.friend_level10_limit = parseInt(friendL10.value, 10);
-      if (friendL5.value !== "") body.friend_level5_limit = parseInt(friendL5.value, 10);
     }
     try {
       const res = await fetch("/game/start", {
@@ -1362,12 +1392,16 @@ def create_viewer_app(game):
         level = body.get("level")
         white_level = body.get("white_level")
         black_level = body.get("black_level")
-        friend_level5_limit = body.get("friend_level5_limit")
+        engine = body.get("engine")
+        white_engine = body.get("white_engine")
+        black_engine = body.get("black_engine")
         friend_level10_limit = body.get("friend_level10_limit")
+        friend_level20_limit = body.get("friend_level20_limit")
         try:
             state, engine_move = game.new_game(
                 white, black, level=level, white_level=white_level, black_level=black_level,
-                friend_level5_limit=friend_level5_limit, friend_level10_limit=friend_level10_limit,
+                engine=engine, white_engine=white_engine, black_engine=black_engine,
+                friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
             )
         except GameError as e:
             return _error(str(e))
