@@ -12,6 +12,41 @@ and also lets a person start a game or play a web-user side.
 Only one game is active at a time. A new game replaces the previous
 game. No endpoint uses authentication.
 
+## For agents: the `computer-chess/` skill
+
+This README is the endpoint reference — every request field, every
+response shape. It is not the place to learn how to *play* a game.
+
+`computer-chess/` is an agent skill covering that:
+
+```
+computer-chess/
+├── SKILL.md                     the move loop and the rules that matter
+├── scripts/chess.py             a CLI wrapper over the endpoints below
+└── references/                  loaded only when the topic comes up
+    ├── setup.md                 starting and joining games
+    ├── trainee.md               the api-trainee discipline
+    ├── phone-a-friend.md        hints and position evaluations
+    ├── endgame.md               results, resigning, the PGN transcript
+    └── rest-api.md              calling the API without the script
+```
+
+`scripts/chess.py` is the recommended way to drive the API. It needs
+only the standard library, makes the same calls documented below, and
+prints a short digest instead of the raw JSON:
+
+```bash
+python3 computer-chess/scripts/chess.py turn --side white
+python3 computer-chess/scripts/chess.py move --side white e2e4 \
+  --chat "Good luck!" --tactical "..." --strategic "..."
+```
+
+The required `--side` is not decoration. Because no endpoint uses
+authentication, a move sent during the wrong side's turn is accepted
+and applied in a game where both sides are `api-user`. The script
+checks whose turn it is and refuses. Anything calling these endpoints
+directly has to make that check itself.
+
 ## Quick start
 
 Build and run the image:

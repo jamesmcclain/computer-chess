@@ -32,7 +32,7 @@ host/port (which can be remapped independently — see run.sh). They are
 thin wrappers over the same shared `ChessGame` object the REST API
 (port 5003, api.py) uses, so behavior and validation are identical
 either way; the REST API remains the one to use for programmatic play
-(see SKILL.md).
+(see computer-chess/SKILL.md).
 
 Appearance (board squares + piece art) is a purely client-side, per-
 browser preference: it's read from the theme catalogue below, picked
@@ -1163,7 +1163,7 @@ function updateChatPanel(state) {
     line.appendChild(nameSpan);
     line.appendChild(document.createTextNode(entry.chat));
     // Every chat line here comes from move_log — show which move it was
-    // attached to, the same way section 2 of SKILL.md describes it.
+    // attached to, the same way computer-chess/SKILL.md describes it.
     const moveSpan = document.createElement("span");
     moveSpan.className = "chat-move";
     moveSpan.textContent = " (" + entry.san + ")";
@@ -1648,7 +1648,7 @@ def create_viewer_app(game):
     # game. They exist only so this page's JS can call them same-origin;
     # see the module docstring above for why. Kept out of api.py's
     # request/response shape so that reference stays exactly what an
-    # agent following SKILL.md sees, with nothing viewer-specific in it.
+    # agent following computer-chess/SKILL.md sees, with nothing viewer-specific in it.
 
     def _error(message, status=400):
         return jsonify(error=message), status
