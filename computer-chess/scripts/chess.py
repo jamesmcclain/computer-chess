@@ -29,10 +29,13 @@ That is not a move loop: no query changes the board or ends the turn.)
 USAGE
 -----
     chess.py new --white api-user --black engine --level 10
+    chess.py join --side white --name "Deep Purple"
     chess.py turn --side white
     chess.py phone-a-friend --side white eval 20:stockfish
     chess.py move --side white e2e4 --chat "..." --tactical "..." --strategic "..."
     chess.py wait --side white
+    chess.py set --side white --name "Deep Purple"
+    chess.py resign --side white
     chess.py transcript --out game.pgn
 
 The API base URL comes from --url, else the CHESS_API environment
@@ -107,6 +110,32 @@ def friend_line(state, side):
         return None
     parts = [f"{name} {value}" for name, value in sorted(budget.items())]
     return "budget: " + "  ".join(parts)
+
+
+def tactics_lines(report):
+    """The derived tactical facts from GET /api/game/analysis, as short
+    lines. These are the facts a caller most often misses when reading a
+    board: loose material, pins, and the checks and captures available.
+
+    The `hanging` entries are a one-ply heuristic from the server, not a
+    full exchange evaluation. They mark squares worth a second look."""
+    lines = []
+    if report["in_check"]:
+        lines.append("  IN CHECK from " + ", ".join(report["checkers"]))
+    for scope, label in (("yours", "YOURS "), ("theirs", "theirs")):
+        for item in report["hanging"][scope]:
+            defenders = ",".join(item["defenders"]) or "none"
+            lines.append(
+                f"  {label} {item['piece']}{item['square']} {item['risk']}"
+                f" (attackers {','.join(item['attackers'])}; defenders {defenders})"
+            )
+    for pin in report["pins"]:
+        lines.append(f"  pin: {pin['color']} {pin['piece']}{pin['square']} cannot move off the king's line")
+    if report["checks"]:
+        lines.append("  checks you can give: " + " ".join(report["checks"]))
+    if report["captures"]:
+        lines.append("  captures you can make: " + " ".join(report["captures"]))
+    return lines
 
 
 def describe_move(entry):
@@ -207,16 +236,44 @@ def cmd_turn(args):
         for line in board_lines(state["board_ascii"]):
             print(line)
         print("fen: " + state["fen"])
+    if not args.brief:
+        report = call(args.url, "GET", "/api/game/analysis")
+        lines = tactics_lines(report)
+        if lines:
+            print("tactics:")
+            for line in lines:
+                print(line)
     line = friend_line(state, args.side) if args.side else None
     if line:
         print(line)
+
     moves = call(args.url, "GET", "/api/game/legal-moves")
-    print(f"legal ({moves['count']}): {moves['moves']}")
+    count = moves["count"]
+    # The full list is fetched either way — fetching costs a request, not
+    # context. Printing it is what costs context, so print it only when
+    # it earns the space: when the choice is small enough to read, or
+    # when check makes every legal move critical. Otherwise print the
+    # count. `move` validates against this same list before it submits,
+    # so a caller that guesses wrong is corrected without losing a turn.
+    if args.legal or count <= 10 or state.get("in_check"):
+        print(f"legal ({count}): {moves['moves']}")
+    else:
+        print(f"legal moves: {count} (run with --legal to list them)")
     return 0
 
 
 def cmd_move(args):
     verify_side(args.url, args.side)
+    # Check the move against the legal list before submitting it. This
+    # call costs a request but no context, and it turns an illegal move
+    # from a rejected API call into a corrected one, with the legal list
+    # printed exactly when it is needed.
+    legal = call(args.url, "GET", "/api/game/legal-moves")
+    if args.move not in legal["moves"].split():
+        raise ApiError(
+            f"{args.move!r} is not legal in this position. "
+            f"Legal moves ({legal['count']}): {legal['moves']}"
+        )
     body = {
         "move": args.move,
         "chat": args.chat,
@@ -305,8 +362,79 @@ def cmd_wait(args):
 
 
 def cmd_resign(args):
-    state = call(args.url, "POST", "/api/game/resign", {"player": args.side})["state"]
+    """Ends the game. CAUTION: this cannot be undone. --abort ends the
+    game with no winner, where a resignation gives the win away."""
+    if args.abort:
+        state = call(args.url, "POST", "/api/game/abort")["state"]
+    elif args.side:
+        state = call(args.url, "POST", "/api/game/resign", {"player": args.side})["state"]
+    else:
+        raise ApiError("give --side to resign for a color, or --abort to end with no winner")
     print(status_line(state))
+    return 0
+
+
+def cmd_join(args):
+    """Take over a side of a game that is already running.
+
+    There is no login and no seat reservation, so joining is a check
+    rather than a claim: confirm that a game exists, that the side is one
+    an API caller may play, and that the game has not ended. After that,
+    play it by passing the same --side to every other command."""
+    state = call(args.url, "GET", "/api/game")
+    players = state.get("players") or {}
+    kind = players.get(args.side)
+    other = players.get("white" if args.side == "black" else "black")
+    if kind not in ("api-user", "api-trainee"):
+        raise ApiError(
+            f"the {args.side} side is {kind!r}, which you cannot take over. "
+            f"Only 'api-user' and 'api-trainee' sides are joinable. "
+            f"Start a new game instead."
+        )
+    if state.get("game_over"):
+        raise ApiError(
+            f"this game already ended (status: {state['status']}). Start a new game."
+        )
+    if args.name:
+        call(args.url, "POST", "/api/game/name", {"color": args.side, "name": args.name})
+    print(f"joined as {args.side} ({kind}); opponent is {other}")
+    if args.name:
+        print(f"name set to {args.name!r}")
+    if kind == "api-trainee":
+        print("TRAINEE: phone-a-friend before every move, or forfeit. "
+              "See references/trainee.md.")
+    print(status_line(state, args.side))
+    last = describe_move(state.get("last_move"))
+    if last:
+        print("last: " + last)
+    return 0
+
+
+def cmd_set(args):
+    """Change a setting on the running game. Covers the display name, the
+    difficulty, and the engine, which are otherwise three endpoints."""
+    changed = []
+    if args.name is not None:
+        if not args.side:
+            raise ApiError("--name needs --side, to say which color the name belongs to")
+        call(args.url, "POST", "/api/game/name", {"color": args.side, "name": args.name})
+        changed.append(f"{args.side} name = {args.name!r}")
+    if args.level is not None:
+        body = {"level": args.level}
+        if args.side:
+            body["color"] = args.side
+        result = call(args.url, "POST", "/api/game/level", body)
+        changed.append(f"levels = {result['levels']}")
+    if args.engine is not None:
+        body = {"engine": args.engine}
+        if args.side:
+            body["color"] = args.side
+        result = call(args.url, "POST", "/api/game/engine", body)
+        changed.append(f"engines = {result['engines']}")
+    if not changed:
+        raise ApiError("give at least one of --name, --level, or --engine")
+    for line in changed:
+        print("set " + line)
     return 0
 
 
@@ -358,8 +486,26 @@ def build_parser():
         "turn", help="board, status and legal moves in one call (read-only)")
     turn.add_argument("--side", choices=["white", "black"],
                       help="your color; adds a whose-turn-it-is line and your budget")
-    turn.add_argument("--brief", action="store_true", help="omit the board and FEN")
+    turn.add_argument("--brief", action="store_true",
+                      help="omit the board, the FEN, and the tactics summary")
+    turn.add_argument("--legal", action="store_true",
+                      help="always list every legal move, however many there are")
     turn.set_defaults(func=cmd_turn)
+
+    join = subparsers.add_parser("join", help="take over a side of a running game")
+    join.add_argument("--side", required=True, choices=["white", "black"],
+                      help="the color you will play")
+    join.add_argument("--name", help="set this side's display name at the same time")
+    join.set_defaults(func=cmd_join)
+
+    setter = subparsers.add_parser(
+        "set", help="change the display name, difficulty, or engine of a running game")
+    setter.add_argument("--side", choices=["white", "black"],
+                        help="which color to change; required with --name")
+    setter.add_argument("--name", help="display name, up to 40 characters")
+    setter.add_argument("--level", type=int, help="difficulty 0-20; affects engine sides only")
+    setter.add_argument("--engine", choices=["gnuchess", "stockfish"])
+    setter.set_defaults(func=cmd_set)
 
     move = subparsers.add_parser("move", help="submit one move")
     move.add_argument("move", help="the move in UCI, e.g. e2e4 or e7e8q")
@@ -387,8 +533,12 @@ def build_parser():
     wait.add_argument("--timeout", type=int, default=25)
     wait.set_defaults(func=cmd_wait)
 
-    resign = subparsers.add_parser("resign", help="resign for one side")
-    resign.add_argument("--side", required=True, choices=["white", "black"])
+    resign = subparsers.add_parser(
+        "resign", help="end the game, by resignation or by abort")
+    resign.add_argument("--side", choices=["white", "black"],
+                        help="resign for this color. The other color wins.")
+    resign.add_argument("--abort", action="store_true",
+                        help="end the game with no winner instead of resigning")
     resign.set_defaults(func=cmd_resign)
 
     transcript = subparsers.add_parser(

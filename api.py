@@ -139,6 +139,22 @@ API_DOC = {
                           "breakdown back. See GET /api/eval-qualities and "
                           "POST /api/game/eval-quality for the eval bar's "
                           "own settings.",
+        "GET /api/game/analysis": "Derived tactical facts about the "
+                                   "current position, for the side to "
+                                   "move (or ?color=white|black). Reports "
+                                   "'hanging' material on both sides with "
+                                   "its attackers and defenders, absolute "
+                                   "'pins', the 'checkers' when in check, "
+                                   "and your legal 'captures' and "
+                                   "'checks'. All of it follows from the "
+                                   "FEN, but deriving it by eye is where "
+                                   "blunders come from. NOTE: 'hanging' "
+                                   "counts direct attackers and defenders "
+                                   "only. It is not a static exchange "
+                                   "evaluation, and it does not see "
+                                   "x-rays, batteries, or pinned "
+                                   "defenders. Treat it as squares worth "
+                                   "a second look, not a verdict.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
                                       "Optional query params: from=e2 to "
                                       "restrict to moves leaving one "
@@ -515,6 +531,14 @@ def create_api_app(game):
         if not game.is_started():
             return error("no game in progress; POST /api/game to start one", 404)
         return jsonify(game.state(**_state_opts(CONTEXT_STATE)))
+
+    @app.get("/api/game/analysis")
+    def get_analysis():
+        color = request.args.get("color")
+        try:
+            return jsonify(game.analysis(color))
+        except GameError as e:
+            return error(str(e), 404 if "no game" in str(e) else 400)
 
     @app.get("/api/game/legal-moves")
     def get_legal_moves():

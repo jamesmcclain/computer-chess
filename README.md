@@ -37,9 +37,15 @@ prints a short digest instead of the raw JSON:
 
 ```bash
 python3 computer-chess/scripts/chess.py turn --side white
+python3 computer-chess/scripts/chess.py join --side white --name "Deep Purple"
 python3 computer-chess/scripts/chess.py move --side white e2e4 \
   --chat "Good luck!" --tactical "..." --strategic "..."
 ```
+
+`chess.py --help` lists every subcommand. Between them they cover the
+endpoints below: starting and joining games, reading the position,
+moving, hints, waiting, renaming, changing difficulty, resigning,
+aborting, and the transcript.
 
 The required `--side` is not decoration. Because no endpoint uses
 authentication, a move sent during the wrong side's turn is accepted
@@ -151,6 +157,50 @@ opening move immediately. The response returns this move as
 `engine_move`.
 
 Response: `201` with `{"state": {...}, "engine_move": {...} | null}`.
+
+### `GET /api/game/analysis` — derived tactical facts
+
+```
+GET /api/game/analysis                # for the side to move
+GET /api/game/analysis?color=black    # for a named color
+```
+
+Reports what the current position holds, so a caller does not have to
+derive it from the FEN and get it wrong:
+
+```json
+{
+  "color": "white",
+  "in_check": false,
+  "checkers": [],
+  "hanging": {
+    "yours": [{"square": "h4", "piece": "Q", "attackers": ["d8"], "defenders": [], "risk": "undefended"}],
+    "theirs": [{"square": "f7", "piece": "P", "attackers": ["c4", "h5"], "defenders": ["e8"], "risk": "more attackers than defenders"}]
+  },
+  "pins": [{"square": "c6", "piece": "N", "color": "black"}],
+  "captures": ["c4f7", "h5e5"],
+  "checks": ["h5f7", "c4f7"]
+}
+```
+
+- `hanging.yours` is material the side named by `color` can lose.
+  `hanging.theirs` is material it can win. `risk` is one of
+  `undefended`, `attacked by a cheaper piece`, or
+  `more attackers than defenders`.
+- `pins` reports absolute pins against the king, on both sides. A
+  relative pin — against a queen, say — is not reported, because the
+  piece is legally free to move.
+- `captures` and `checks` are the legal moves of each kind belonging to
+  the side to move. Both are empty when `color` names the other side.
+
+**`hanging` is a one-ply heuristic, not a static exchange evaluation.**
+It counts the direct attackers and defenders of a square. It does not
+resolve the full capture sequence, does not see x-ray attacks or
+batteries behind a first attacker, and does not know whether a defender
+is itself pinned and unable to recapture. Treat each entry as a square
+worth a second look, never as a verdict.
+
+Returns `404` if no game has started.
 
 ### `GET /api/game/legal-moves` — legal moves for the side to move
 

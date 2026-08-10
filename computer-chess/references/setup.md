@@ -1,8 +1,7 @@
 # Setting up and joining games
 
-Read this when you start a game that is not the plain
-"you as White against the engine" case in SKILL.md section 1, or when
-you join a game that is already running.
+Read this for any game other than the simple case in SKILL.md section
+1. That case is you as White, against the engine.
 
 ## Choosing the two sides
 
@@ -47,9 +46,9 @@ python3 scripts/chess.py new --white api-user --black engine --level 3
 Use `--white-level` and `--black-level` to set one side alone. They win
 over `--level` for that side.
 
-If the user asks for an easier or harder opponent, or names a
-difficulty such as "beginner" or "hard", set the level to match. Do not
-try to play badly on purpose.
+If the user asks for an easier or harder opponent, set the level to
+match. Do the same for a named difficulty, such as "beginner" or
+"hard". Do not try to play badly on purpose.
 
 ## Which engine
 
@@ -105,29 +104,26 @@ run `chess.py turn` when the user asks, or point them at the viewer.
 There is no login and no seat reservation. To join, find the open side
 and start moving for it.
 
-1. Read the current game:
+Use the `join` command. It makes every check for you:
 
-   ```bash
-   python3 scripts/chess.py turn
-   ```
+```bash
+python3 scripts/chess.py join --side white --name "Deep Purple"
+```
 
-   An error saying no game is in progress means you should start one
-   instead.
+`join` reports one of these results:
 
-2. Check the type of the color the user wants. `chess.py new` prints
-   the types when a game starts; for a running game, read `players` from
-   `GET /api/game` (see `rest-api.md`).
-   - `api-user`: you can play it, if nobody else is acting for it.
-   - `engine` or `web-user`: you cannot take it over. Tell the user, and
-     offer a new game with the colors set correctly.
-   - Both sides `engine`: this is a watch-only game. No side is
-     joinable. Offer a new game.
+- **Success.** It names your opponent's type and whose turn it is. Play
+  from SKILL.md section 2, and pass the same `--side` every time.
+- **The side is not joinable.** An `engine` or `web-user` side belongs
+  to someone else. Tell the user. Then offer a new game with the colors
+  set correctly.
+- **The game already ended.** Report the result. Then offer a new game.
+- **No game exists.** Start one instead, from section 1 above.
 
-3. If the game has already ended, do not move. Report the result and
-   offer a new game.
+`--name` is optional. It sets your display name at the same time.
 
-4. Read whose turn it is. If it is your color, play (SKILL.md section
-   2). If not, wait (SKILL.md section 3).
+If the side is `api-trainee`, `join` prints a warning. Read
+`trainee.md` before your first move.
 
 When both sides are `api-user`, nothing in the game records which
 caller owns which color. Ask the user which color you play. Then pass

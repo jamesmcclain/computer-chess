@@ -42,6 +42,15 @@ DEFAULT_LEVEL = 10
 # unspecified, purely so existing callers that never mention an engine
 # name keep getting the same engine they always did.
 ENGINE_NAMES = ("gnuchess", "stockfish")
+
+# Standard relative piece values, used only by analysis() to decide
+# whether an attacker is cheaper than the piece it attacks. The king is
+# 0 because it is never captured or traded, so its value never enters a
+# comparison here.
+PIECE_VALUES = {
+    chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
+    chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0,
+}
 DEFAULT_ENGINE = "gnuchess"
 ENGINE_DISPLAY_NAMES = {"gnuchess": "GNU Chess", "stockfish": "Stockfish"}
 
@@ -1447,6 +1456,111 @@ class ChessGame:
             self._trigger_eval_locked()
             self._bump_version_locked()
             return player_entry, engine_entry
+
+    def analysis(self, color=None):
+        """Derived tactical facts about the current position, for the
+        side named by `color` (default: the side to move).
+
+        This answers the questions a caller most often gets wrong by
+        reading a board alone: what of mine can be taken, what of theirs
+        can I take, what is pinned, and what captures and checks exist.
+        Every fact here is derivable from the FEN, but deriving it
+        correctly takes care, and a single missed hanging piece loses a
+        game. The server has the board and a chess library, so it does
+        the work once, exactly, instead of the caller redoing it by eye.
+
+        LIMITS — read these before you trust the output. `hanging` is a
+        one-ply heuristic, not a static exchange evaluation. It counts
+        direct attackers and defenders of a square. It does not resolve
+        the full capture sequence, does not see x-ray attacks or
+        batteries behind a first attacker, and does not know whether a
+        defender is itself pinned and so unable to recapture. Treat it
+        as a list of squares that deserve a second look, never as a
+        verdict. `pins` reports absolute pins against the king only, the
+        only kind a chess library can state without ambiguity.
+
+        Returns a dict of:
+        - `color`, `in_check`, and `checkers` (squares of the pieces
+          giving check, empty when not in check)
+        - `hanging`: {"yours": [...], "theirs": [...]} — each entry has
+          `square`, `piece` (uppercase letter), `attackers`, `defenders`
+          (square lists), and `risk`
+        - `pins`: absolutely pinned pieces on both sides
+        - `captures` and `checks`: your legal moves of each kind, in UCI
+        """
+        with self._lock:
+            if not self.started:
+                raise GameError("no game in progress; POST /api/game to start one")
+            board = self.board
+            if color is None:
+                color = "white" if board.turn == chess.WHITE else "black"
+            if color not in ("white", "black"):
+                raise GameError("'color' must be 'white' or 'black'")
+            mine = chess.WHITE if color == "white" else chess.BLACK
+
+            def squares(square_set):
+                return sorted(chess.square_name(s) for s in square_set)
+
+            def scan(owner):
+                """Pieces of `owner` that an opponent attacks, with why
+                the square is worth a second look."""
+                found = []
+                for square, piece in board.piece_map().items():
+                    if piece.color != owner or piece.piece_type == chess.KING:
+                        continue  # a king is never captured; check covers it
+                    attackers = board.attackers(not owner, square)
+                    if not attackers:
+                        continue
+                    defenders = board.attackers(owner, square)
+                    value = PIECE_VALUES[piece.piece_type]
+                    cheapest = min(
+                        PIECE_VALUES[board.piece_at(a).piece_type] for a in attackers
+                    )
+                    if not defenders:
+                        risk = "undefended"
+                    elif cheapest < value:
+                        risk = "attacked by a cheaper piece"
+                    elif len(attackers) > len(defenders):
+                        risk = "more attackers than defenders"
+                    else:
+                        continue  # defended, and no obvious way to win material
+                    found.append({
+                        "square": chess.square_name(square),
+                        "piece": piece.symbol().upper(),
+                        "attackers": squares(attackers),
+                        "defenders": squares(defenders),
+                        "risk": risk,
+                    })
+                return sorted(found, key=lambda e: e["square"])
+
+            pins = []
+            for square, piece in sorted(board.piece_map().items()):
+                if board.is_pinned(piece.color, square):
+                    pins.append({
+                        "square": chess.square_name(square),
+                        "piece": piece.symbol().upper(),
+                        "color": "white" if piece.color == chess.WHITE else "black",
+                    })
+
+            captures, checks = [], []
+            # Legal moves belong to the side to move. When `color` is the
+            # other side, it has no moves to list, so both stay empty.
+            if board.turn == mine:
+                for move in board.legal_moves:
+                    if board.is_capture(move):
+                        captures.append(move.uci())
+                    if board.gives_check(move):
+                        checks.append(move.uci())
+
+            return {
+                "color": color,
+                "in_check": board.is_check() and board.turn == mine,
+                "checkers": squares(board.checkers()) if board.is_check() else [],
+                "hanging": {"yours": scan(mine), "theirs": scan(not mine)},
+                "pins": pins,
+                "captures": captures,
+                "checks": checks,
+            }
 
     def _phone_a_friend_preamble_locked(self):
         """Caller must hold self._lock. The eligibility checks every

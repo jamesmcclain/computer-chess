@@ -28,7 +28,7 @@ Before each move you must:
 ## The penalty
 
 **Skipping either requirement forfeits the game immediately.** The
-server discards your move without applying it, sets the status to
+server discards your move without applying it. The status becomes
 `forfeited`, and your opponent wins. There is no warning and no retry.
 
 `chess.py move` prints this plainly when it happens:
@@ -63,9 +63,9 @@ turn.
 `chess.py turn --side white` prints your remaining budget. Read it every
 turn. While any number there is not `0`, you owe a call.
 
-If you are ever unsure whether you already called phone-a-friend for
-the current move, **call it again.** An extra call costs one unit of
-budget. A skipped call costs the whole game.
+If you are unsure whether you called phone-a-friend for this move,
+**call it again.** An extra call costs one unit of budget. A skipped
+call costs the game.
 
 ## When the budget runs out
 

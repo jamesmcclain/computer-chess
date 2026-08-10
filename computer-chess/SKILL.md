@@ -5,8 +5,8 @@ description: Play chess through the computer-chess REST service, a dockerized ch
 
 # Playing chess through computer-chess
 
-Use `scripts/chess.py` for every call. It wraps the REST API, prints a
-short digest instead of raw JSON, and refuses to move for the wrong
+Use `scripts/chess.py` for every call. It wraps the REST API. It prints
+a short digest instead of raw JSON, and it refuses to move for the wrong
 side. Section 6 covers the raw endpoints, for the rare case where you
 cannot run the script.
 
@@ -30,9 +30,9 @@ Read these before your first move.
   opponent, use `chess.py wait`. It blocks until your turn. See
   section 3.
 - **Play one side only.** You never play both sides of a game.
-- **Keep playing until the game ends.** Once the user tells you to start
-  or join, play every turn on your own. Do not stop for user input
-  between moves. Stop only if the user tells you to stop.
+- **Keep playing until the game ends.** Play every turn on your own. Do
+  not stop for user input between moves. Stop only if the user tells you
+  to stop.
 - **Trust the board, not your memory.** Read the status line from each
   command. You cannot predict an opponent's move.
 - **Narrate every turn to the user.** Say what the opponent's move does.
@@ -55,10 +55,30 @@ python3 scripts/chess.py new --white api-user --black engine --level 10
 `--level` runs 0 to 20, weakest to strongest. Set it to match any
 difficulty the user asks for.
 
-Read **`references/setup.md`** for: playing Black, playing a person or
-another API user, choosing GNU Chess or Stockfish, display names, hint
-budgets, two engines playing each other, and joining a game that is
-already running.
+To take over a side of a game that already runs, use `join`:
+
+```bash
+python3 scripts/chess.py join --side white --name "Deep Purple"
+```
+
+`join` confirms that the side is one you can play, and that the game is
+still running. It refuses an `engine` or `web-user` side. The `--name`
+is optional and cosmetic.
+
+Read **`references/setup.md`** for these topics:
+
+- playing Black, or against a person or another API user
+- choosing GNU Chess or Stockfish, and setting the difficulty
+- display names and hint budgets
+- two engines playing each other
+- joining a game in more detail
+
+To change a name, a level, or an engine during a game, use `set`:
+
+```bash
+python3 scripts/chess.py set --side white --name "Deep Purple"
+python3 scripts/chess.py set --side black --level 3
+```
 
 If the user asks for "trainee mode" by name, read
 **`references/trainee.md`** first. Do not use trainee mode otherwise.
@@ -74,8 +94,21 @@ one turn at a time. Never write a code loop that does it for you.
 python3 scripts/chess.py turn --side white
 ```
 
-This prints the status, the opponent's last move and chat, the board,
-the FEN, your hint budget, and every legal move.
+This one command prints everything you need:
+
+- the status, and whose turn it is
+- the opponent's last move, and any chat on it
+- the board and the FEN
+- a `tactics:` summary — loose material, pins, and the checks and
+  captures available to you
+- your hint budget, and the legal moves
+
+Read the `tactics:` lines before you choose. They name the pieces that
+can be taken on both sides. You do not have to find them by eye.
+
+NOTE: the tactics summary marks squares worth a second look. It counts
+direct attackers and defenders only. Confirm a capture before you trust
+it.
 
 **Step 2 — narrate the opponent's move.** Tell the user in plain words
 what their move does. Do this before you plan your own.
@@ -84,7 +117,7 @@ what their move does. Do this before you plan your own.
 position is hard to read, you can ask for help first (section 4).
 
 **Step 4 — narrate your choice.** Tell the user the idea behind the
-move, and why you preferred it to the alternatives. Do this every turn,
+move. Say why you preferred it to the alternatives. Do this every turn,
 not only for unusual moves.
 
 **Step 5 — submit it.**
@@ -96,9 +129,14 @@ python3 scripts/chess.py move --side white e2e4 \
   --strategic "e4 takes the center and frees the bishop and queen."
 ```
 
-`--side` is required. The API has no login, so a move sent on the wrong
-side would otherwise be accepted and applied. The script checks whose
-turn it is and refuses if it is not yours.
+`--side` is required. The API has no login. In a game between two API
+callers, the server accepts a move sent on the wrong side and applies
+it. The script checks whose turn it is, and it refuses when the turn is
+not yours.
+
+The script also checks your move against the legal list before it sends
+it. If the move is illegal, the script prints the legal moves and sends
+nothing.
 
 The output shows your move, the engine's reply if there is one, and the
 new status. Treat that reply as the opponent move you narrate in step 2
@@ -132,7 +170,8 @@ python3 scripts/chess.py phone-a-friend --side white eval 10
 ```
 
 - `eval` asks Stockfish who is winning, at full strength.
-- `10` or `20` asks an engine what it would play. Level 20 is stronger.
+- `10` or `20` asks an engine for its own choice of move. Level 20 is
+  stronger.
 - `LEVEL:ENGINE` picks the engine, for example `20:stockfish`.
 
 You can ask more than one query in a run, as the third example shows.
@@ -151,10 +190,13 @@ Report the result to the user in plain words, such as "Checkmate — Black
 wins" or "Draw by stalemate". Do not read out the raw status string.
 Then offer a new game.
 
-To resign for your side:
+CAUTION: The next two commands end the game at once. You cannot undo
+either one. Use them only when the user asks, or when you have told the
+user why you resign.
 
 ```bash
-python3 scripts/chess.py resign --side white
+python3 scripts/chess.py resign --side white   # the other side wins
+python3 scripts/chess.py resign --abort        # ends with no winner
 ```
 
 To save the annotated PGN once the game has ended:

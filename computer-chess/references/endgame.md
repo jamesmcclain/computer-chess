@@ -64,7 +64,7 @@ the game ended), then the moves. Every move carries a comment with:
 - the `chat` line you sent with it
 - your `--tactical` and `--strategic` notes
 - the eval bar's own read of the position after that move, if the bar
-  was on
+  was on at the time
 
 This is the only place your reasoning is ever given back to you. The
 server withholds it while the game runs, so no opponent can read it.
@@ -74,5 +74,6 @@ or `#N` for a forced mate.
 Use `--include moves` for the bare move list with no comments. Use it
 only when the user wants the moves alone.
 
-Fetch the transcript when the user asks for a copy of the game, a way
-to review it later, or their own reasoning written out.
+Fetch the transcript when the user asks for a copy of the game. Do the
+same when they want to review it later, or want their own reasoning
+written out.

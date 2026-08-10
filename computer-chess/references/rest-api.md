@@ -18,6 +18,9 @@ curl http://10.0.2.2:5003/api/game
 # legal moves: one space-separated string of UCI moves
 curl http://10.0.2.2:5003/api/game/legal-moves
 
+# derived tactics: loose material, pins, captures, checks
+curl http://10.0.2.2:5003/api/game/analysis
+
 # submit a move
 curl -X POST http://10.0.2.2:5003/api/game/move \
   -H 'Content-Type: application/json' \
@@ -35,13 +38,24 @@ curl -X POST http://10.0.2.2:5003/api/game/phone-a-friend \
 
 `GET /api` returns the full endpoint list at any time.
 
+`GET /api/game/analysis` reports what the position holds: the material
+that can be taken on both sides, the absolute pins, and your legal
+captures and checks. Every fact in it follows from the FEN. Deriving
+those facts by eye is where blunders come from, so read this endpoint
+rather than repeat its work.
+
+CAUTION: the `hanging` list counts direct attackers and defenders only.
+It is not a static exchange evaluation. It does not see x-rays,
+batteries, or pinned defenders. Treat each entry as a square worth a
+second look.
+
 ## Things to know about the responses
 
 - The position comes as `fen` and `board_ascii`. There is no 8x8 array.
 - Per-move responses leave out the fields that cannot change during a
   game: `started`, `players`, `player_names`, `engine_levels`,
   `engine_names`. Read those from `GET /api/game`.
-- Add `?verbose=1` to any of them for the full payload. You should not
+- Add `?verbose=1` to any of them for the full payload. You do not
   normally need it.
 - `GET /api/game/wait` returns `{"changed": false, ...}` with no state
   when the timeout expires and nothing happened. Call it again.
@@ -52,9 +66,9 @@ curl -X POST http://10.0.2.2:5003/api/game/phone-a-friend \
 
 ## The check the script does for you
 
-**The API has no authentication.** In a game where both sides are
-`api-user`, a move sent during the wrong side's turn is accepted and
-applied. Nothing rejects it.
+**The API has no authentication.** Take a game where both sides are
+`api-user`. The server accepts a move sent during the wrong side's turn,
+and it applies that move. Nothing rejects it.
 
 `chess.py` takes a required `--side` and refuses to act when it is not
 that side's turn. If you call the API directly, you lose that
