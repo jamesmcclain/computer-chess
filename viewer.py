@@ -1722,9 +1722,17 @@ def create_viewer_app(game):
         """Backs the page's "Download transcript" button, shown once the
         game has ended (see transcriptBtnEl in the JS). Same underlying
         call as the REST API's GET /api/game/transcript — a downloadable
-        PGN file, not JSON."""
+        PGN file, not JSON.
+
+        This always serves the complete, fully annotated transcript, with
+        every chat line, both reasoning fields, and the eval read on every
+        move. Unlike the REST API's copy of this endpoint it takes no
+        'include' parameter and offers no way to ask for less: the file is
+        going to disk for a person to keep and review, so there is nothing
+        to be gained by trimming it and a finished game's whole record to
+        lose."""
         try:
-            pgn = game.transcript()
+            pgn = game.transcript(include_annotations=True)
         except GameError as e:
             return _error(str(e))
         return Response(

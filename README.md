@@ -115,6 +115,20 @@ Response: `201` with `{"state": {...}, "engine_move": {...} | null}`.
 The optional query parameter `from=e2` limits the result to moves that
 start on that square.
 
+`format` (optional, `compact` or `full`, default `compact`) picks the
+shape of `moves`. The default returns one space-separated string of UCI
+moves — each is directly usable as the `move` field of
+`POST /api/game/move`, and the whole response is roughly a tenth the
+size of the `full` form:
+
+```json
+{"moves": "e2e4 e2e3 g1f3 b1c3 ...", "count": 20}
+```
+
+`format=full` returns the expanded form, where `from`, `to` and
+`promotion` restate parts of `uci` and `san` gives the same move in
+standard algebraic notation:
+
 ```json
 {"moves": [{"uci": "e2e4", "san": "e4", "from": "e2", "to": "e4", "promotion": null}, ...], "count": 20}
 ```
@@ -220,9 +234,17 @@ survives to the next game. Response: `{"eval_quality": "fast"}`.
 
 ### `GET /api/game` — current state
 
-This endpoint returns the board, the side to move, the game status, the
-move history, and more. Check the `turn` field to find the side to
-move.
+This endpoint returns the position, the side to move, the game status,
+and more. Check the `turn` field to find the side to move.
+
+Responses are trimmed for size by default, since every byte here is
+paid for twice — once on the wire, and again in the context window of
+whatever is reading it. Two fields are left out: the 8x8 `board` grid,
+which re-encodes the position already given by `fen` and `board_ascii`,
+and `move_log`, whose replacement is the O(1) `last_move`.
+`phone_a_friend` is sent in a compact form (below). Add `?verbose=1` to
+this or any other endpoint that returns a state to get the `board` grid
+and the expanded `phone_a_friend` breakdown back.
 
 ```json
 {
@@ -234,21 +256,13 @@ move.
   "in_check": false,
   "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
   "board_ascii": "r n b q k b n r\n...",
-  "board": [[{"color": "white", "type": "P", "code": "wP"}, null, ...], ...],
   "players": {"white": "api-user", "black": "engine"},
   "player_names": {"white": "Deep Purple", "black": null},
   "engine_levels": {"white": 10, "black": 10},
   "engine_names": {"white": "gnuchess", "black": "stockfish"},
   "phone_a_friend": {
-    "limits": {"gnuchess": {"level_10": 2, "level_20": 1}, "stockfish": {"level_10": 2, "level_20": 1}},
-    "white": {
-      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
-      "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
-    },
-    "black": {
-      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
-      "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
-    }
+    "white": {"gnuchess": "2/1", "stockfish": "2/1"},
+    "black": {"gnuchess": "2/1", "stockfish": "2/1"}
   },
   "fullmove_number": 1,
   "halfmove_clock": 0,
@@ -268,13 +282,32 @@ phone-a-friend call or reasoning field — see `POST /api/game` and
 plays each `"engine"` side — see `POST /api/game/engine` above. Its
 entry for a non-`"engine"` side has no meaning.
 
-`phone_a_friend` shows this game's hint budget (`limits`, set at
-`POST /api/game` time) and each side's usage/remaining count at each
-tier, broken out per engine — GNU Chess hints and Stockfish hints draw
-on independent quotas, not a shared one. See
+`phone_a_friend` shows how many hints each side has left, broken out
+per engine — GNU Chess hints and Stockfish hints draw on independent
+quotas, not a shared one. Each value is the count *remaining* at each
+tier, joined by a slash in tier order (`"level_10/level_20"`), where
+`-1` means unlimited. So `"2/1"` is two level-10 hints and one level-20
+hint still available, and `"0/0"` means that engine is exhausted. See
 `POST /api/game/phone-a-friend` below. Only an `"api-user"`/
-`"api-trainee"` side can use it, but the field is always present so
-anyone reading the state can see the budget.
+`"api-trainee"` side can use it, but the field is always present,
+whatever the usage and whoever is playing, so anyone reading the state
+can see the budget — an `"api-trainee"` side in particular must check
+it before every move.
+
+`?verbose=1` replaces this with the expanded form, which additionally
+carries the `limits` set at `POST /api/game` time and each side's `used`
+counts:
+
+```json
+"phone_a_friend": {
+  "limits": {"gnuchess": {"level_10": 2, "level_20": 1}, "stockfish": {"level_10": 2, "level_20": 1}},
+  "white": {
+    "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
+    "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
+  },
+  "black": {"...": "same shape"}
+}
+```
 
 There is no `eval` field in this JSON API response — the eval bar (see
 `GET /api/eval-qualities` and `POST /api/game/eval-quality` above) is a
@@ -290,7 +323,16 @@ move. This endpoint, `POST /api/game/move`, `POST
 /api/game/phone-a-friend`, and `GET /api/game/wait` all return only
 this one entry, not the full move log, so their response size stays
 constant no matter how long the game runs — safe to call once per
-move in a loop. The board viewer (port 5004) is the one place the
+move in a loop.
+
+The five fields that cannot change while a game runs — `started`,
+`players`, `player_names`, `engine_levels` and `engine_names` — are
+returned by this endpoint and by `POST /api/game`, the two calls whose
+job is to establish where things stand. They are left out of the
+per-move responses (`POST /api/game/move`,
+`POST /api/game/phone-a-friend`, `GET /api/game/wait`,
+`POST /api/game/resign`, `POST /api/game/abort`), where repeating them
+every turn would say nothing new. `?verbose=1` restores them. The board viewer (port 5004) is the one place the
 full move log is exposed, since it renders the whole game's history
 and chat.
 
@@ -311,12 +353,27 @@ GET /api/game/wait?color=white&timeout=25
 
 `color` (required) is the side to wait for. `timeout` (optional
 seconds, default 25, capped at 55) bounds how long the request can
-block. This call returns `{"state": {...}}` as soon as one of three
-things happens: it becomes `color`'s turn, the game ends, or the
-timeout passes. It returns immediately, without blocking, if any of
-those is already true when it is called — including if no game has
-started. A timed-out response looks the same as any other: check
-`state.turn` and `state.game_over` in it to tell the difference.
+block. It returns immediately, without blocking, if it is already
+`color`'s turn, the game has ended, or no game has started.
+
+The response tells you which of those happened, so you do not have to
+work it out from the state yourself. When there is something to act on
+— it is now `color`'s turn, or the game ended — you get the state:
+
+```json
+{"changed": true, "state": {...}}
+```
+
+When the timeout simply expired with the position unchanged, you get a
+minimal response instead, because sending a full state to report that
+nothing happened is the most wasteful thing this API can do — and a
+caller waiting on a slow human opponent may collect several in a row:
+
+```json
+{"changed": false, "turn": "black", "game_over": false}
+```
+
+Branch on `changed`, and call again when it is `false`.
 
 ### `POST /api/game/move` — submit a move
 
@@ -483,6 +540,24 @@ third of a pawn, `-1.20` = black better by a bit over a pawn), or
 1. e4 {Chat: Good luck! / Tactical: no immediate tactics / Strategic: e4 grabs the center / Eval: +0.34} e5 2. Qh5 Nc6
 3. Bc4 Nf6 4. Qxf7# {Chat: gg / Eval: #3} 1-0
 ```
+
+`include` (optional, `all` or `moves`, default `all`) controls those
+per-move comments. The default is the complete annotated transcript
+shown above — the reasoning is withheld for the entire game and folded
+in here, so dropping it silently would defeat the point of collecting
+it. `include=moves` returns bare movetext with the same tag pairs, for
+a caller that wants only the moves and does not want a long,
+heavily-annotated game's comments (up to 240 + 1000 + 1000 characters
+per ply) landing in its context:
+
+```
+1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7# 1-0
+```
+
+The board viewer's own "Download transcript" button (port 5004) always
+serves the complete annotated transcript and accepts no `include`
+parameter — that file is going to disk for a person to keep, so there
+is nothing to gain by trimming it.
 
 Returns `400` if no game has started, or the current game is still
 in progress.

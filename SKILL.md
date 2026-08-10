@@ -314,7 +314,8 @@ plays several moves in a row without a stop for thought between them.
 
 Repeat this loop for each of your turns:
 
-1. Query legal moves with curl:
+1. Query legal moves with curl. The response is one space-separated
+   string of UCI moves:
    ```bash
    curl http://10.0.2.2:5003/api/game/legal-moves
    ```
@@ -363,9 +364,14 @@ GET /api/game/legal-moves            # all legal moves for the side to move
 GET /api/game/legal-moves?from=e2    # only moves that start on e2
 ```
 
-Each entry has `uci` (for example, `"e2e4"`, or `"e7e8q"` for
-promotion), `san` (for example, `"e4"`, `"Nf3"`, `"O-O"`), `from`,
-`to`, and `promotion`.
+`moves` is a single space-separated string of UCI moves — for example
+`"e2e4 e2e3 g1f3 ..."`, or `"e7e8q"` for a promotion — with `count`
+alongside it. Each one can go straight into the `move` field below.
+
+Add `?format=full` if you need the expanded form, where every move is
+an object with `uci`, `san` (`"e4"`, `"Nf3"`, `"O-O"`), `from`, `to`,
+and `promotion`. It is about ten times the size, so use it only when
+you actually want SAN or the split-out squares.
 
 Submit a move. UCI and SAN both work — use UCI, since it has only one
 meaning. `chat`, `tactical_reasoning`, and `strategic_reasoning`
@@ -409,6 +415,15 @@ Response:
   no matter how long the game runs — safe to fetch every turn in the
   loop (section 4.1). The board viewer is the one place the full
   history is exposed.
+- **State responses are trimmed by default.** The position comes as
+  `fen` and `board_ascii`; there is no 8x8 `board` array. Per-move
+  responses (this one, `POST /api/game/phone-a-friend`,
+  `GET /api/game/wait`, resign, abort) also leave out the five fields
+  that cannot change during a game — `started`, `players`,
+  `player_names`, `engine_levels`, `engine_names`. Read those from
+  `POST /api/game` or `GET /api/game`, which both still carry them.
+  Add `?verbose=1` to any of these if you ever need the full payload,
+  but you should not normally need it.
 - `400` means the move was illegal or malformed, or it was not an
   `"api-user"`/`"api-trainee"`/`"web-user"` turn. Read the `error`
   field, then correct your next call — for example, fetch legal moves
@@ -432,12 +447,15 @@ GET /api/game/wait?color=white&timeout=25
 
 - `color` is your color. This call blocks until it becomes that
   color's turn, the game ends, or `timeout` seconds pass (optional,
-  default 25, capped at 55) — whichever comes first. It returns
-  `{"state": {...}}`.
+  default 25, capped at 55) — whichever comes first.
 - It returns at once, with no wait, if it is already your turn, the
   game already ended, or no game has started.
-- A timeout looks the same as any other return. Check `state.turn`
-  and `state.game_over` yourself. If neither changed, call it again.
+- Branch on the `changed` field:
+  - `{"changed": true, "state": {...}}` — there is something to act
+    on. Read `state.turn` and `state.game_over` and carry on.
+  - `{"changed": false, "turn": ..., "game_over": ...}` — the timeout
+    expired with nothing changed. There is no `state` at all in this
+    case, by design. Just call it again.
 - This call blocks your whole turn — you cannot do anything else in
   the conversation until it returns. Tell the user you are waiting
   for their move before you make this call.
@@ -534,23 +552,20 @@ Response:
   notations (section 4.2 explains the difference). `advice.used`,
   `advice.limit`, and `advice.remaining` give the budget used, the
   total, and what remains.
-- `state` is the full, current game state — unchanged by this call,
-  except `state.phone_a_friend`. That field always shows both sides'
-  budget and usage at both levels, broken out per engine, whether or
-  not you have called this endpoint yet:
+- `state` is the current game state — unchanged by this call, except
+  `state.phone_a_friend`. That field is always present, whatever your
+  usage and whether or not you have ever called this endpoint. It
+  shows how many queries each side has **left**, per engine, as
+  `"level_10/level_20"`, where `-1` means unlimited:
   ```json
   "phone_a_friend": {
-    "limits": {"gnuchess": {"level_10": 2, "level_20": 1}, "stockfish": {"level_10": 2, "level_20": 1}},
-    "white": {
-      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
-      "stockfish": {"used": {"level_10": 0, "level_20": 1}, "remaining": {"level_10": 2, "level_20": 0}}
-    },
-    "black": {
-      "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
-      "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
-    }
+    "white": {"gnuchess": "2/1", "stockfish": "2/0"},
+    "black": {"gnuchess": "2/1", "stockfish": "2/1"}
   }
   ```
+  So `"2/0"` means two level-10 queries left and no level-20 queries
+  left for that engine. `"0/0"` means that engine is exhausted — try
+  the other engine, or decide on your own.
 - `400` means one of these:
   - it was not your turn
   - your side was not `"api-user"`/`"api-trainee"`
@@ -629,6 +644,11 @@ GET /api/game/transcript
 - Returns raw PGN text, not JSON: metadata as tag pairs at the top
   (players, result, engine names and levels where relevant, how the
   game ended), then the move list.
+- Add `?include=moves` for bare movetext with no comments. Use it only
+  if you want the moves alone — the default, `?include=all`, is the
+  one that carries the reasoning, which is the whole reason it was
+  kept back until now. A long, heavily annotated game can be large, so
+  prefer saving it to a file (below) over printing all of it.
 - Every move's `chat` (section 2), any private `tactical_reasoning`/
   `strategic_reasoning` you recorded for it (also section 2), and the
   eval bar's own read of the position right after that move (if the

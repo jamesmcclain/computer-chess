@@ -501,7 +501,7 @@ class ChessGame:
                  engine=None, white_engine=None, black_engine=None,
                  white_name=None, black_name=None,
                  friend_level10_limit=None, friend_level20_limit=None,
-                 engine_friend_limits=None, include_eval=False):
+                 engine_friend_limits=None, include_eval=False, state_opts=None):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
         ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
         (optional, 0-20, Stockfish's native "Skill Level" scale — see
@@ -636,7 +636,7 @@ class ChessGame:
 
             self._trigger_eval_locked(reset=True)
             self._bump_version_locked()
-            state = self.state(include_eval=include_eval)
+            state = self.state(include_eval=include_eval, **(state_opts or {}))
 
         if both_engines:
             # Neither side will ever call POST /api/game/move, so nothing
@@ -794,6 +794,36 @@ class ChessGame:
             "limits": {name: tiers(self.friend_limits[name]) for name in ENGINE_NAMES},
             "white": side("white"),
             "black": side("black"),
+        }
+
+    def _friend_summary_compact_locked(self):
+        """Caller must hold self._lock. The same information as
+        _friend_summary_locked(), squeezed into roughly a fifth of the
+        bytes for API callers, who read this on every single response.
+
+        Shape: {color: {engine: "R10/R20"}} — one slash-joined string of
+        the queries *remaining* per tier, in FRIEND_LEVELS order, where
+        -1 means unlimited (FRIEND_LIMIT_UNLIMITED). Usage counts and
+        limits are dropped: remaining is the only figure a caller acts
+        on, and the limits were fixed at game start. The full breakdown
+        stays available via _friend_summary_locked() for the board
+        viewer, which renders used/limit as a progress readout.
+
+        This is never omitted, even when nothing has been used yet: an
+        'api-trainee' side must check its own budget before every move
+        (see make_move()'s forfeit rules), so the field has to be
+        present unconditionally for that check to be safe."""
+        return {
+            color: {
+                name: "/".join(
+                    str(_friend_remaining(
+                        self.friend_limits[name][tier], self.friend_used[color][name][tier]
+                    ))
+                    for tier in FRIEND_LEVELS
+                )
+                for name in ENGINE_NAMES
+            }
+            for color in ("white", "black")
         }
 
     def _friend_queries_left_locked(self, color):
@@ -1053,7 +1083,8 @@ class ChessGame:
             self._bump_version_locked()
             return dict(self.player_names)
 
-    def wait_for_change(self, since_version, timeout=25, include_eval=False, include_log=True):
+    def wait_for_change(self, since_version, timeout=25, include_eval=False, include_log=True,
+                        **state_opts):
         """Block until the game state has changed since `since_version`
         (or `timeout` seconds elapse), then return (state_dict, version).
 
@@ -1064,21 +1095,48 @@ class ChessGame:
         """
         with self._lock:
             if since_version != self._version:
-                return self.state(include_eval=include_eval, include_log=include_log), self._version
+                return self.state(include_eval=include_eval, include_log=include_log,
+                                  **state_opts), self._version
             self._change_cond.wait(timeout)
-            return self.state(include_eval=include_eval, include_log=include_log), self._version
+            return self.state(include_eval=include_eval, include_log=include_log,
+                              **state_opts), self._version
 
-    def wait_for_turn(self, color, timeout=None, include_eval=False, include_log=False):
+    def _turn_ready_locked(self, color):
+        """Caller must hold self._lock. True when there is nothing left
+        to wait for on `color`'s behalf: it is that color's turn, the
+        game has ended, or no game has started at all.
+
+        Read straight off the authoritative attributes rather than off a
+        state() dict, since state()'s optional fields (notably 'started')
+        can be gated off by the caller — see state()'s `include_static`.
+        """
+        if not self.started:
+            return True
+        if self._status() not in ("not_started", "in_progress"):
+            return True
+        return ("white" if self.board.turn == chess.WHITE else "black") == color
+
+    def wait_for_turn(self, color, timeout=None, include_eval=False, include_log=False,
+                      state_opts=None):
         """Block until it is `color`'s turn to move, the game ends, or
         `timeout` seconds elapse (default WAIT_DEFAULT_TIMEOUT_SECONDS,
         capped at WAIT_MAX_TIMEOUT_SECONDS) — whichever comes first.
-        Returns the state at that point; the caller should check
-        `state["turn"]` themselves, since a timeout looks the same as any
-        other return here. Used by GET /api/game/wait so an API user can
-        wait for their opponent's move with a single blocking call
-        instead of a poll loop. `include_log` defaults to False here
-        (unlike state()'s own default) since this is a per-move hot-loop
-        call — the caller gets `last_move` instead, which is O(1).
+        Used by GET /api/game/wait so an API user can wait for their
+        opponent's move with a single blocking call instead of a poll
+        loop. `include_log` defaults to False here (unlike state()'s own
+        default) since this is a per-move hot-loop call — the caller gets
+        `last_move` instead, which is O(1). `state_opts` is an optional
+        dict of further keyword arguments for state() (see its gates),
+        letting a caller trim the returned snapshot without this method
+        having to know which fields exist.
+
+        Returns `(state, ready)`. `ready` is True when the wait ended for
+        a reason the caller can act on — it is now `color`'s turn, the
+        game has ended, or no game has started — and False when the
+        timeout simply expired with the position unchanged. Callers use
+        it to avoid re-sending a full state that says nothing happened;
+        it also spares them from having to tell a timeout apart from a
+        real return by inspecting the state themselves.
 
         Returns immediately, without blocking at all, if it is already
         `color`'s turn, the game has already ended, or no game has
@@ -1090,22 +1148,42 @@ class ChessGame:
         timeout = max(0.0, min(timeout, WAIT_MAX_TIMEOUT_SECONDS))
         deadline = time.time() + timeout
 
+        def snapshot_locked(ready):
+            # state_opts wins over this method's own defaults, so a caller
+            # can override include_log (etc.) through either channel
+            # without the two colliding as duplicate keyword arguments.
+            opts = {"include_eval": include_eval, "include_log": include_log}
+            opts.update(state_opts or {})
+            return self.state(**opts), ready
+
         with self._lock:
-            state = self.state(include_eval=include_eval, include_log=include_log)
+            if self._turn_ready_locked(color):
+                return snapshot_locked(True)
             version = self._version
 
         while True:
-            if not state["started"] or state["game_over"] or state["turn"] == color:
-                return state
             remaining = deadline - time.time()
             if remaining <= 0:
-                return state
-            state, version = self.wait_for_change(
-                version, timeout=remaining, include_eval=include_eval, include_log=include_log
+                with self._lock:
+                    return snapshot_locked(self._turn_ready_locked(color))
+            # The returned snapshot is discarded — only the version
+            # matters here — so build the cheapest one available.
+            _, version = self.wait_for_change(
+                version, timeout=remaining, include_log=False, include_board_grid=False
             )
+            with self._lock:
+                if self._turn_ready_locked(color):
+                    return snapshot_locked(True)
 
-    def state(self, include_eval=False, include_log=True):
-        """`include_eval` gates the 'eval' field (the live Stockfish eval
+    def state(self, include_eval=False, include_log=True, include_board_grid=True,
+              include_static=True, friend_detail="full"):
+        """Build the game-state dict. Every gate below defaults to the
+        fullest output, so the board viewer (which needs all of it to
+        render) can keep calling this with no arguments; the REST API
+        turns them down, because it pays for every byte twice — once on
+        the wire and again in the caller's context window.
+
+        `include_eval` gates the 'eval' field (the live Stockfish eval
         bar reading). Defaults to False; the board viewer, which shows the
         eval bar to spectators, is the one caller that passes True.
 
@@ -1115,13 +1193,36 @@ class ChessGame:
         api.py) pass False and read 'last_move' instead, which is always
         exactly one entry or None. The board viewer, which renders full
         game history and chat, passes True (the default) to get the
-        whole log."""
+        whole log.
+
+        `include_board_grid` gates the 'board' field, the 8x8 array of
+        per-square objects built by _board_grid(). It is far and away the
+        largest fixed-size field here — bigger than everything else put
+        together — and it is a third encoding of a position already given
+        by 'fen' and 'board_ascii'. It exists for the board viewer, whose
+        JS indexes it per square and maps each cell's 'code' to a piece
+        image. API callers get the same information from 'fen' in a
+        thirtieth of the space, so api.py passes False.
+
+        `include_static` gates the fields that cannot change for the
+        lifetime of a game — 'started', 'players', 'player_names',
+        'engine_levels', 'engine_names'. Re-sending them on every move
+        is pure repetition, so api.py drops them from its per-move
+        responses and keeps them on the calls that establish or
+        re-establish context (POST /api/game, GET /api/game).
+
+        `friend_detail` is 'full' (the nested used/remaining/limits
+        breakdown from _friend_summary_locked(), for the viewer's player
+        bar) or 'compact' (the terse per-color remaining strings from
+        _friend_summary_compact_locked(), for API callers). The field
+        itself is always present either way — never omitted, whatever
+        the usage, since an 'api-trainee' side has to read it before
+        every move."""
         with self._lock:
             board = self.board
             status = self._status()
             game_over = status not in ("not_started", "in_progress")
             result = {
-                "started": self.started,
                 "status": status,
                 "game_over": game_over,
                 "winner": self._winner() if game_over else None,
@@ -1129,16 +1230,22 @@ class ChessGame:
                 "in_check": board.is_check(),
                 "fen": board.fen(),
                 "board_ascii": str(board),
-                "board": self._board_grid(),
-                "players": {"white": self.white_type, "black": self.black_type},
-                "player_names": dict(self.player_names),
-                "engine_levels": dict(self.engine_levels),
-                "engine_names": dict(self.engine_names),
-                "phone_a_friend": self._friend_summary_locked(),
+                "phone_a_friend": (
+                    self._friend_summary_locked() if friend_detail == "full"
+                    else self._friend_summary_compact_locked()
+                ),
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
                 "last_move": self.move_log[-1] if self.move_log else None,
             }
+            if include_board_grid:
+                result["board"] = self._board_grid()
+            if include_static:
+                result["started"] = self.started
+                result["players"] = {"white": self.white_type, "black": self.black_type}
+                result["player_names"] = dict(self.player_names)
+                result["engine_levels"] = dict(self.engine_levels)
+                result["engine_names"] = dict(self.engine_names)
             if include_log:
                 result["move_log"] = list(self.move_log)
             if include_eval:
@@ -1342,7 +1449,7 @@ class ChessGame:
                 "remaining": _friend_remaining(limit, self.friend_used[color][engine_name][level]),
             }
 
-    def resign(self, player, include_eval=False):
+    def resign(self, player, include_eval=False, state_opts=None):
         player = (player or "").strip().lower()
         if player not in ("white", "black"):
             raise GameError("'player' must be 'white' or 'black'")
@@ -1354,9 +1461,9 @@ class ChessGame:
             self.result_reason = "resigned"
             self.resigned_by = player
             self._bump_version_locked()
-            return self.state(include_eval=include_eval)
+            return self.state(include_eval=include_eval, **(state_opts or {}))
 
-    def abort(self, include_eval=False):
+    def abort(self, include_eval=False, state_opts=None):
         """Immediately end the current game with no winner (status
         "aborted"), regardless of player types — unlike resign(), this
         doesn't need a 'player' side to act as, so it also works for a
@@ -1376,9 +1483,9 @@ class ChessGame:
                 raise GameError(f"game is not in progress (status: {self._status()})")
             self.result_reason = "aborted"
             self._bump_version_locked()
-            return self.state(include_eval=include_eval)
+            return self.state(include_eval=include_eval, **(state_opts or {}))
 
-    def transcript(self):
+    def transcript(self, include_annotations=True):
         """Build a PGN (Portable Game Notation) transcript of the game
         that just ended — the standard plain-text chess-game format;
         see the module comment above ChessGame for a link. Folds in any
@@ -1400,6 +1507,16 @@ class ChessGame:
         into this one summary artifact instead of staying hidden
         forever. Raises GameError if no game has started, or the
         current game is still in progress.
+
+        `include_annotations` (default True) controls the per-move PGN
+        comments — chat, tactical/strategic reasoning, and the eval read.
+        Pass False for bare movetext: the annotations are unbounded in
+        principle (up to CHAT_MAX_LEN + two REASONING_MAX_LEN per ply),
+        so on a long, heavily-annotated game they can dwarf the moves
+        themselves. That matters for an API caller pulling the result
+        into a context window; the board viewer's download button always
+        takes the full annotated artifact, which is the whole point of
+        keeping the reasoning until the end.
 
         Returns the transcript as a single string (tag pairs, a blank
         line, then movetext ending in the PGN result token)."""
@@ -1468,6 +1585,8 @@ class ChessGame:
             if entry["color"] == "white":
                 parts.append(f"{(ply + 1) // 2}.")
             parts.append(entry["san"])
+            if not include_annotations:
+                continue
             comment_bits = []
             chat = entry.get("chat")
             if chat:
