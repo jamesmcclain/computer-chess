@@ -17,11 +17,11 @@ Core facts to remember:
 
 - You play one and only one side of a game (black or white) never
   both in the same game.
-- **`for` loops are strictly prohibited, in the shell and in Python
-  alike.** Make one API call per move. Stop and think about that move
-  before you submit it. A loop skips the thinking step and can play
-  out a whole game blind, with no narration and no real decisions.
-  See section 4.1.
+- **`for` loops and `while` loops are strictly prohibited, in the shell
+  and in Python alike.** Make one API call per move. Stop and think
+  about that move before you submit it. A loop skips the thinking step
+  and can play out a whole game blind, with no narration and no real
+  decisions. See section 4.1.
 - **Once told to start or join a game, keep playing until it ends.**
   Submit moves and wait for turns (section 4.3) one at a time, on
   your own, without a stop for user input between moves. Stop only if
@@ -29,13 +29,35 @@ Core facts to remember:
   when the game has ended (section 5).
 - **One game is active at a time.** A new game replaces any game in
   progress.
-- **A side has one of three types.** `"api-user"` (an outside caller
-  like you, sending moves through this API), `"web-user"` (a person
-  who clicks the board in the viewer), or `"engine"` (GNU Chess or
-  Stockfish — see `engine_names` in `state`). You always act as
-  `"api-user"`, whichever color you play. Your opponent can be any of
-  the three types — do not assume it is the engine, or, if it is,
-  which engine.
+- **A side has one of four types.** `"api-user"` (an outside caller
+  like you, sending moves through this API), `"api-trainee"` (exactly
+  like `"api-user"`, plus a strict process requirement — see below),
+  `"web-user"` (a person who clicks the board in the viewer), or
+  `"engine"` (GNU Chess or Stockfish — see `engine_names` in `state`).
+  You act as `"api-user"` by default, whichever color you play, unless
+  the user specifically asks you to play as `"api-trainee"` (or asks
+  for "trainee mode", "training mode", or similar). Your opponent can
+  be any of the four types — do not assume it is the engine, or, if it
+  is, which engine.
+- **If you are playing as `"api-trainee"`** (check `state.players` for
+  your color — do not assume; the user's request at game start is what
+  determines this, not anything you infer mid-game), every move has
+  two hard requirements, checked *before* the move is applied:
+  - You must call `POST /api/game/phone-a-friend` (any level, any
+    engine) at some point since your last move, unless you have zero
+    phone-a-friend budget left at every level and engine (check
+    `state.phone_a_friend` for your color). See section 4.5.
+  - You must include both `tactical_reasoning` and
+    `strategic_reasoning` on the move (this skill already requires
+    both on every move regardless of type — section 2 — so following
+    that existing rule already covers this one).
+  Skipping either forfeits the game immediately and irreversibly: the
+  server discards your submitted move without applying it, ends the
+  game with status `"forfeited"`, and your opponent wins. There is no
+  retry. If you are ever unsure whether you already phoned a friend
+  for the current move, call it again rather than risk skipping it —
+  an extra call only costs one unit of budget, where skipping it
+  costs the entire game.
 - **The API has no authentication and no seat reservation.** Whoever
   calls `POST /api/game/move` during a color's turn moves for that
   color. There is no login and no player ID. "Playing white" means
@@ -48,10 +70,10 @@ Core facts to remember:
 - **Do not poll the turn in a tight loop.** `state.turn` (from
   `GET /api/game`) names the side to move. If it is not your turn,
   use `GET /api/game/wait` instead of polling — it blocks until your
-  turn comes up. See section 4.3. This is separate from the `for`-loop
-  ban above. That rule bans a code loop that submits moves. This rule
-  bans a code loop that checks the same state over and over.  Use
-  of `sleep` is utterly forbidden.
+  turn comes up. See section 4.3. This is separate from the loop ban
+  above: that rule bans a code loop that submits moves; this rule bans
+  a code loop that checks the same state over and over. Use of `sleep`
+  is utterly forbidden.
 - **Always narrate your thinking to the user.** Say something after
   you see an opponent's move, and again before you submit your own
   move. Section 4.1 gives the exact points to do this at. This is
@@ -59,26 +81,23 @@ Core facts to remember:
   tell the person in this conversation. Narrating is not the same as
   stopping — keep narrating and playing without a pause for user
   input, per the second bullet above.
-- **`chat` and `reasoning` are optional at the API level, but this
-  skill requires both on every move.** Send one of each with every
-  `POST /api/game/move` call. `chat` is for banter and trash talk
-  only — never put strategy in it, since your opponent and anyone at
-  the board viewer read it. `reasoning` is where your strategy and
-  analysis go — it stays private while the game is in progress.
+- **`chat`, `tactical_reasoning`, and `strategic_reasoning` are
+  optional at the API level, but this skill requires all three on
+  every move.** Send them with every `POST /api/game/move` call.
+  `chat` is for banter and trash talk only — never put strategy in it,
+  since your opponent and anyone at the board viewer read it.
+  `tactical_reasoning` and `strategic_reasoning` are where your
+  analysis goes — they stay private while the game is in progress.
   Display name (also in section 2) stays optional.
-- **You can "phone a friend" for a move recommendation, since you are
-  always `"api-user"`.** This asks an engine for its move choice in
-  the current position, without submitting that move or ending your
-  turn. Each game gives you a small budget of level-20 and level-10
-  queries — 1 and 2 by default — tracked separately for GNU Chess and
-  Stockfish, so you can draw on both. See section 4.5.
+- **You can "phone a friend" for a move recommendation** (as
+  `"api-user"` or `"api-trainee"`). This asks an engine for its move
+  choice in the current position, without submitting that move or
+  ending your turn. Each game gives you a small budget of level-20 and
+  level-10 queries — 1 and 2 by default — tracked separately for GNU
+  Chess and Stockfish, so you can draw on both. See section 4.5.
 - **Once the game ends, a PGN transcript is available.** It folds in
-  every move's chat and reasoning. See section 5.1.
-- **`state.eval` is a live Stockfish read on who is winning** — the
-  board viewer's eval bar. It is purely informational, runs on its own
-  separate Stockfish process, and has nothing to do with your side or
-  turn — you do not need to read it to play correctly, and it is not a
-  substitute for your own analysis or `phone_a_friend`. See README.md.
+  every move's chat, tactical reasoning, strategic reasoning, and eval
+  bar read. See section 5.1.
 
 ## 1. Starting a new game
 
@@ -89,15 +108,20 @@ Content-Type: application/json
 {"white": "api-user", "black": "engine", "level": 10}
 ```
 
-- `white` and `black` are each `"api-user"`, `"web-user"`, or
-  `"engine"` (see the core facts above for what each means). Every
-  pairing is valid, including two engines — see the note below.
+- `white` and `black` are each `"api-user"`, `"api-trainee"`,
+  `"web-user"`, or `"engine"` (see the core facts above for what each
+  means). Every pairing is valid, including two engines — see the
+  note below.
 - If you are playing, pick your color and set the other side:
   - You vs. the engine, you as White: `{"white": "api-user", "black": "engine"}`
   - You vs. the engine, you as Black: `{"white": "engine", "black": "api-user"}`
   - You vs. another API user: `{"white": "api-user", "black": "api-user"}`
   - You vs. a person on the board viewer: set the other side to
     `"web-user"`, for example `{"white": "api-user", "black": "web-user"}`.
+  - You in "trainee mode" (only if the user asks for it by name — see
+    the core facts above): use `"api-trainee"` in place of
+    `"api-user"` for your own side, e.g.
+    `{"white": "api-trainee", "black": "engine"}`.
 - `level` (optional, `0`-`20`, weakest to strongest, default `10` —
   Stockfish's own native "Skill Level" scale) sets the difficulty for
   both sides at once. It matters only for a side that is `"engine"`.
@@ -159,10 +183,10 @@ Keep `state`: `state.turn` names the side to move next.
 ## 2. Setting your name, chatting, and recording your reasoning
 
 Display name is optional and cosmetic — skip it unless the user asks
-for one. `chat` and `reasoning` are different: the API marks both
-optional, but this skill requires you to send both with every move.
-They serve opposite purposes — see below. None of the three affects
-move legality or turn order.
+for one. `chat`, `tactical_reasoning`, and `strategic_reasoning` are
+different: the API marks all three optional, but this skill requires
+you to send all three with every move. They serve different purposes —
+see below. None of them affects move legality or turn order.
 
 **Display name.** Set one with:
 
@@ -199,42 +223,45 @@ line goes out with a move:
 
 - `chat` is for banter and trash talk only. Never put strategy, a
   plan, or analysis in it — your opponent and anyone at the board
-  viewer read it right away. Put strategy in `reasoning` instead
-  (below).
+  viewer read it right away. Put strategy in `tactical_reasoning`/
+  `strategic_reasoning` instead (below).
 - `chat` can be up to 240 characters. Longer text is cut short.
 - There is no separate inbox. The API stamps your chat onto that
-  move's entry in `move_log`. Your opponent sees it the next time
-  they read the game state: in the response to their own next move,
-  or in a plain `GET /api/game` call. A person at the board viewer
-  sees it in a chat panel, next to the move.
-- To read a chat line from your opponent, check their latest
-  `move_log` entry for a `chat` field. This is the same place you
-  check to see what move they made (section 4.1, step 3).
+  move's entry, returned as `state.last_move`. Your opponent sees it
+  the next time they read the game state: in the response to their
+  own next move, or in a plain `GET /api/game` call. A person at the
+  board viewer sees it in a chat panel, next to the move.
+- To read a chat line from your opponent, check `state.last_move` for
+  a `chat` field. This is the same place you check to see what move
+  they made (section 4.1, step 3).
 - For a line not tied to a move — a greeting, or "gg" at the end —
   attach it to a move you submit anyway. Use your first move, or your
   last move before you resign. You cannot send chat without a move.
 
-**Private reasoning.** `reasoning` (up to 1000 characters, also cut
-short, not rejected) is a second field on `POST /api/game/move`,
-alongside `chat`. Send one with every move — this skill requires it,
-even though the API accepts a move without one:
+**Private reasoning.** `tactical_reasoning` and `strategic_reasoning`
+(each up to 1000 characters, also cut short, not rejected) are two
+more fields on `POST /api/game/move`, alongside `chat`. Send both with
+every move — this skill requires them, even though the API accepts a
+move without either:
 
 ```json
-{"move": "e2e4", "reasoning": "e4 grabs the center and opens lines for the bishop and queen."}
+{"move": "e2e4", "tactical_reasoning": "no immediate captures or threats to calculate", "strategic_reasoning": "e4 grabs the center and opens lines for the bishop and queen."}
 ```
 
-- `reasoning` holds your strategy: the analysis and plan behind the
-  move. This is the opposite of `chat` — keep strategy out of `chat`,
-  and keep banter out of `reasoning`.
-- Unlike `chat`, no endpoint returns `reasoning` while the game is in
-  progress. The server keeps it alone — not shown to your opponent,
-  anyone at the board viewer, or even back to you on a later read.
-  One exception: once the game ends, it goes into that game's PGN
-  transcript (section 5.1), since no advantage is left to protect.
+- `tactical_reasoning` holds your concrete, move-local calculation —
+  captures, checks, threats, forced sequences. `strategic_reasoning`
+  holds the longer-term plan behind the move. Together they are the
+  opposite of `chat` — keep strategy and calculation out of `chat`,
+  and keep banter out of both reasoning fields.
+- Unlike `chat`, no endpoint returns either reasoning field while the
+  game is in progress. The server keeps them alone — not shown to your
+  opponent, anyone at the board viewer, or even back to you on a later
+  read. One exception: once the game ends, both go into that game's
+  PGN transcript (section 5.1), since no advantage is left to protect.
 - This is not the plain-language explanation you give the user before
-  each move (section 4.1, step 4). Give both — one does not replace
-  the other. Narration talks to the user in this conversation.
-  `reasoning` is a permanent record kept on the server.
+  each move (section 4.1, step 4). Give all three — none replaces the
+  others. Narration talks to the user in this conversation; the
+  reasoning fields are a permanent record kept on the server.
 
 ## 3. Joining a game already in progress
 
@@ -298,21 +325,23 @@ Repeat this loop for each of your turns:
    curl http://10.0.2.2:5003/api/game
    ```
 3. Check for an opponent move since your last turn: a new
-   `engine_move`, or a new `move_log` entry from your opponent. If you
+   `engine_move`, or a `state.last_move` from your opponent. If you
    find one, tell the user what you think it does, in plain language,
    before you plan your own move. Also check that entry for a `chat`
    field (section 2) and react to it if present.
 4. Choose a legal move. Before you submit it, tell the user the idea
    behind it: what it does for your position, and why you picked it
    over the alternatives. Give this explanation every time, not only
-   for unusual moves. Also write your `reasoning` (your strategy —
-   section 2) and a `chat` line (banter only, no strategy — section
-   2). This skill requires both on every move.
-5. Submit the move with curl, `chat` and `reasoning` included:
+   for unusual moves. Also write your `tactical_reasoning` and
+   `strategic_reasoning` (your calculation and strategy — section 2)
+   and a `chat` line (banter only, no strategy — section 2). This
+   skill requires all three on every move.
+5. Submit the move with curl, `chat`, `tactical_reasoning`, and
+   `strategic_reasoning` included:
    ```bash
    curl -X POST http://10.0.2.2:5003/api/game/move \
      -H 'Content-Type: application/json' \
-     -d '{"move": "e2e4", "chat": "Good luck!", "reasoning": "e4 grabs the center and opens lines for the bishop and queen."}'
+     -d '{"move": "e2e4", "chat": "Good luck!", "tactical_reasoning": "no immediate captures or threats to calculate", "strategic_reasoning": "e4 grabs the center and opens lines for the bishop and queen."}'
    ```
 6. Repeat from step 1 until the game ends (section 5). Do this on
    your own, one turn at a time, with no stop for user input between
@@ -323,7 +352,7 @@ it like any opponent move: narrate it (step 3) at the start of your
 next loop, before you plan your reply. In a two-API-user or
 `"web-user"`-opponent game, wait for the other side instead (section
 4.3), then narrate their move (step 3) as soon as you see it in
-`move_log`.
+`state.last_move`.
 
 ### 4.2 Move submission details
 
@@ -339,16 +368,17 @@ promotion), `san` (for example, `"e4"`, `"Nf3"`, `"O-O"`), `from`,
 `to`, and `promotion`.
 
 Submit a move. UCI and SAN both work — use UCI, since it has only one
-meaning. `chat` and `reasoning` (section 2) attach a chat line and a
-private note. The API marks both optional, but this skill requires
-you to send both, every time: `chat` for banter, `reasoning` for your
-strategy.
+meaning. `chat`, `tactical_reasoning`, and `strategic_reasoning`
+(section 2) attach a chat line and two private notes. The API marks
+all three optional, but this skill requires you to send all three,
+every time: `chat` for banter, `tactical_reasoning` for your
+calculation, `strategic_reasoning` for your plan.
 
 ```
 POST /api/game/move
 Content-Type: application/json
 
-{"move": "e2e4", "chat": "Good luck!", "reasoning": "e4 grabs the center"}
+{"move": "e2e4", "chat": "Good luck!", "tactical_reasoning": "no immediate tactics", "strategic_reasoning": "e4 grabs the center"}
 ```
 
 Response:
@@ -368,14 +398,25 @@ Response:
   side's turn right after your move. The API computes and applies the
   engine's reply in this same call. This is the opponent's reply —
   narrate and respond to it next (section 4.1, step 3).
-- `state` is the full game state after both moves apply. Always read
+- `state` is the game state after both moves apply. Always read
   `turn` and `status` from it. Do not assume their values. It also
   carries `player_names`: `{"white": name_or_null, "black": name_or_null}`
-  (section 2).
+  (section 2), and `last_move`, the single most-recent move-log entry
+  (or `null` before any move) — use it to see your opponent's last
+  move and any `chat` on it (section 2, section 4.1 step 3). `state`
+  here, on `GET /api/game`, and on `GET /api/game/wait` deliberately
+  excludes the full move-by-move history, so its size stays constant
+  no matter how long the game runs — safe to fetch every turn in the
+  loop (section 4.1). The board viewer is the one place the full
+  history is exposed.
 - `400` means the move was illegal or malformed, or it was not an
-  `"api-user"`/`"web-user"` turn. Read the `error` field, then correct
-  your next call — for example, fetch legal moves again, or check the
-  turn again.
+  `"api-user"`/`"api-trainee"`/`"web-user"` turn. Read the `error`
+  field, then correct your next call — for example, fetch legal moves
+  again, or check the turn again.
+- If you are `"api-trainee"` and skipped a required phone-a-friend
+  call or reasoning field, the response is *not* this shape at all —
+  see section 5's forfeit bullet. That is not a `400`; it is a normal
+  `200`/`201`-style response reporting the game already ended.
 
 ### 4.3 Waiting for the other side
 
@@ -403,7 +444,7 @@ GET /api/game/wait?color=white&timeout=25
 
 To keep the conversation moving while you wait, poll `GET /api/game`
 instead, with a real pause between calls. Make each check its own
-tool call — never a `for` loop that polls in code:
+tool call — never a `for`/`while` loop that polls in code:
 
 ```
 GET /api/game        # check, think for a few seconds, check again — not a rapid loop
@@ -441,7 +482,16 @@ You can ask an engine for its move choice in the current position,
 without submitting that move. Use it as a hint for a hard decision,
 not as a substitute for choosing and submitting your own move
 (section 4.1, steps 4-5). It is available only to you, the
-`"api-user"` side, and only on your own turn.
+`"api-user"`/`"api-trainee"` side, and only on your own turn.
+
+**If you are playing as `"api-trainee"`,** this call is not optional:
+you must make it before every move for as long as you have any budget
+left at any level or engine (see the core facts above). Make it a
+standing step in your move loop for that game — check
+`state.phone_a_friend` for your color, and if any tier still shows
+budget, call this endpoint (any level, any engine satisfies the
+requirement) before `POST /api/game/move`. Skipping it when budget
+remains forfeits the game on the spot, with no warning first.
 
 ```
 POST /api/game/phone-a-friend
@@ -503,8 +553,7 @@ Response:
   ```
 - `400` means one of these:
   - it was not your turn
-  - your side was not `"api-user"` (this will not happen — you are
-    always `"api-user"`)
+  - your side was not `"api-user"`/`"api-trainee"`
   - `level` was not `10` or `20`
   - `engine` was not a valid engine name
   - you had no queries left at that level for that engine
@@ -539,10 +588,19 @@ the move history yourself.
   | `draw_claimable_threefold_repetition`     | Draw claimable (threefold repetition)       |
   | `resigned`                                | A side resigned                             |
   | `aborted`                                 | Someone ended the game early, no winner (e.g. the board viewer's Restart button) |
+  | `forfeited`                               | An `"api-trainee"` side skipped a required phone-a-friend call or reasoning field — see the core facts above |
 
   `state.winner` is `"white"`, `"black"`, or `null` (a draw, an abort,
-  or no result yet). On checkmate or resignation, this field names the
-  winner directly — do not compute it yourself.
+  or no result yet). On checkmate, resignation, or forfeit, this field
+  names the winner directly — do not compute it yourself.
+- **If you are playing as `"api-trainee"` and your move gets
+  forfeited,** the response to `POST /api/game/move` looks different
+  from an ordinary move: `{"forfeited": true, "by": "white"|"black",
+  "reasons": [...], "state": {...}}` instead of `{"move", "engine_move",
+  "state"}`. Check for the `"forfeited"` key. This should never happen
+  if you follow the trainee requirements above on every move — if it
+  does, tell the user plainly that you forfeited and why (`reasons`),
+  don't obscure it.
 
 - Once `game_over` is `true`, `POST /api/game/move` starts to return
   `400` ("game is not in progress"). Use this only as backup, if you
@@ -571,10 +629,15 @@ GET /api/game/transcript
 - Returns raw PGN text, not JSON: metadata as tag pairs at the top
   (players, result, engine names and levels where relevant, how the
   game ended), then the move list.
-- Every move's `chat` (section 2) and any private `reasoning` you
-  recorded for it (also section 2) appear as a comment on that move.
-  This is the only place `reasoning` is ever exposed — once the game
-  is over, no advantage is left to protect.
+- Every move's `chat` (section 2), any private `tactical_reasoning`/
+  `strategic_reasoning` you recorded for it (also section 2), and the
+  eval bar's own read of the position right after that move (if the
+  eval bar was on, and a read completed before it was superseded)
+  appear as a comment on that move. This is the only place reasoning
+  or an eval bar read is ever exposed to you — once the game is over,
+  no advantage is left to protect; it's given as pawns from white's
+  point of view (`+0.34`, `-1.20`) or `#N`/`#-N` for a forced mate in N
+  by white/black.
 - `400` means no game has started, or the current game is still in
   progress. This only works once `state.game_over` is `true`.
 - Use this endpoint when the user asks for a copy of the game, a way

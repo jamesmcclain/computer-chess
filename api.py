@@ -32,7 +32,8 @@ API_DOC = {
                     "both equally supported everywhere an 'engine' side is.",
     "endpoints": {
         "POST /api/game": {
-            "body": {"white": "api-user|web-user|engine", "black": "api-user|web-user|engine",
+            "body": {"white": "api-user|api-trainee|web-user|engine",
+                     "black": "api-user|api-trainee|web-user|engine",
                      "level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
                      "white_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
                      "black_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
@@ -56,7 +57,18 @@ API_DOC = {
                                        "friend_level20_limit for that engine and tier only — "
                                        f"one of {', '.join(ENGINE_NAMES)}"},
             "description": "Start a new game, replacing any game already "
-                            "in progress. Both sides can be 'engine'; the "
+                            "in progress. 'api-trainee' behaves exactly "
+                            "like 'api-user' (same REST calls), except "
+                            "every move must be preceded by a "
+                            "POST /api/game/phone-a-friend call — if that "
+                            "side still has any budget left, see "
+                            "'friend_level10_limit' etc. below — and must "
+                            "include both 'tactical_reasoning' and "
+                            "'strategic_reasoning' (see POST /api/game/move). "
+                            "Skipping either forfeits the game immediately: "
+                            "the submitted move is discarded, status "
+                            "becomes 'forfeited', and the other side wins. "
+                            "Both sides can be 'engine'; the "
                             "two engines then play each other, paced one "
                             "move at a time, with no further calls needed. "
                             "'level' sets the difficulty for both sides at "
@@ -80,14 +92,15 @@ API_DOC = {
                             "a friend' budget (see "
                             "POST /api/game/phone-a-friend) — how many "
                             f"level-{FRIEND_LEVELS[0]} and level-{FRIEND_LEVELS[1]} engine hints an "
-                            "'api-user' side may ask for over the course "
-                            "of this game, for every engine at once. Each "
+                            "'api-user'/'api-trainee' side may ask for "
+                            "over the course of this game, for every "
+                            "engine at once. Each "
                             "engine's quota is tracked separately, not "
                             "pooled — 'friend_limits' sets one or more "
                             "engines' budgets at one or both tiers "
                             "specifically, and wins over the generic "
                             "fields for whichever engine/tier it names, so "
-                            "an 'api-user' side can be given hints from "
+                            "a side can be given hints from "
                             "every engine independently, no matter how "
                             "many engines this server supports. Any limit, "
                             "generic or per-engine, can be set to "
@@ -106,28 +119,17 @@ API_DOC = {
                           "status, move log — including any chat attached "
                           "to a move — engine levels and engine choices, "
                           "player names, ...). This is also how to check "
-                          "whose turn it is — see the 'turn' field. "
-                          "'eval' is the eval bar's current assessment: "
-                          "{'quality', 'pov', 'score_cp', 'mate', "
-                          "'pending', 'error'} — 'score_cp' (centipawns, "
-                          "positive favors White) or 'mate' (moves to "
-                          "mate, positive means White mates, negative "
-                          "means Black mates) is set, never both; "
-                          "'pending' is true while a fresh evaluation for "
-                          "the current position is still being computed "
-                          "— 'score_cp'/'mate' hold the previous "
-                          "position's values in the meantime, so the bar "
-                          "doesn't flicker to neutral on every move (both "
-                          "are null right after a new game, before the "
-                          "first evaluation completes). See "
+                          "whose turn it is — see the 'turn' field. See "
                           "GET /api/eval-qualities and "
-                          "POST /api/game/eval-quality.",
+                          "POST /api/game/eval-quality for the eval bar's "
+                          "own settings.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
                                       "Optional query param: from=e2",
         "POST /api/game/move": {
             "body": {"move": "e2e4 (UCI) or e4 (SAN)",
                      "chat": "optional, up to 240 chars",
-                     "reasoning": "optional, up to 1000 chars"},
+                     "tactical_reasoning": "optional, up to 1000 chars",
+                     "strategic_reasoning": "optional, up to 1000 chars"},
             "description": "Submit a move for whichever side is currently "
                             "to move. 'chat' (optional) is a short chat "
                             "line attached to this move — it is stamped, "
@@ -139,15 +141,30 @@ API_DOC = {
                             "sees it the next time they read the game "
                             "state, e.g. in the response to their own "
                             "next move, or a plain GET /api/game. "
-                            "'reasoning' (optional) is a private note on "
-                            "why you chose this move — unlike 'chat', it "
-                            "is never returned by this or any other "
-                            "endpoint while the game is in progress; it "
-                            "is kept server-side only until the game ends "
-                            "(see GET /api/game/transcript). If it "
-                            "becomes the engine's turn afterward, that "
-                            "engine replies immediately and its move is "
-                            "returned as 'engine_move'.",
+                            "'tactical_reasoning' and 'strategic_reasoning' "
+                            "(optional for 'api-user'/'web-user', required "
+                            "for 'api-trainee' — see below) are private "
+                            "notes on why you chose this move — the former "
+                            "for concrete, move-local calculation, the "
+                            "latter for your longer-term plan. Unlike "
+                            "'chat', neither is ever returned by this or "
+                            "any other endpoint while the game is in "
+                            "progress; both are kept server-side only "
+                            "until the game ends (see "
+                            "GET /api/game/transcript). If it becomes the "
+                            "engine's turn afterward, that engine replies "
+                            "immediately and its move is returned as "
+                            "'engine_move'. If the side to move is "
+                            "'api-trainee' and it either skipped a required "
+                            "POST /api/game/phone-a-friend call (see that "
+                            "endpoint) or omitted 'tactical_reasoning'/"
+                            "'strategic_reasoning', the submitted move is "
+                            "discarded and the game ends on the spot: the "
+                            "response is {'forfeited': true, 'by': "
+                            "'white'|'black', 'reasons': [...], 'state': "
+                            "...} instead of {'move', 'engine_move', "
+                            "'state'} — check for 'forfeited' rather than "
+                            "assuming the ordinary shape.",
         },
         "GET /api/game/wait": {
             "query": {"color": "white|black",
@@ -168,7 +185,8 @@ API_DOC = {
             "body": {"level": f"one of: {', '.join(str(l) for l in FRIEND_LEVELS)}",
                      "engine": f"optional, one of: {', '.join(ENGINE_NAMES)}, "
                                "defaults to gnuchess"},
-            "description": "For the 'api-user' side to move only: ask an "
+            "description": "For the 'api-user'/'api-trainee' side to move "
+                            "only: ask an "
                             "engine what it would play in the current "
                             "position, without submitting that move. Does "
                             "not change the board, does not end your "
@@ -179,8 +197,14 @@ API_DOC = {
                             f"({FRIEND_LEVELS[0]} and {FRIEND_LEVELS[1]}) has its own budget for the game, "
                             "per engine — GNU Chess hints and Stockfish "
                             "hints draw on independent quotas, not a "
-                            "shared one, so an 'api-user' side can use "
-                            "both. Set at POST /api/game time (see "
+                            "shared one, so a side can use "
+                            "both. For 'api-trainee', a successful call "
+                            "here at any level/engine satisfies that "
+                            "side's phone-a-friend requirement for the "
+                            "move it's about to submit (see "
+                            "POST /api/game/move) — required before every "
+                            "move for as long as any budget remains. Set "
+                            "at POST /api/game time (see "
                             "'friend_level10_limit'/'friend_level20_limit' "
                             "and the per-engine 'friend_limits' field "
                             "above; defaults "
@@ -230,10 +254,13 @@ API_DOC = {
                             "game — the standard plain-text chess format "
                             "read by lichess.org, chess.com, and most "
                             "chess software. Every move's 'chat' (see "
-                            "POST /api/game/move) and any private "
-                            "'reasoning' recorded for it are folded in as "
-                            "a PGN comment on that move — reasoning is "
-                            "otherwise never returned by any endpoint, "
+                            "POST /api/game/move), any private "
+                            "'tactical_reasoning'/'strategic_reasoning' "
+                            "recorded for it, and the eval bar's read of "
+                            "the resulting position (if on — see "
+                            "GET /api/eval-qualities) are folded in as a "
+                            "PGN comment on that move — chat/reasoning "
+                            "are otherwise never returned by any endpoint, "
                             "but once the game is over there's no ongoing "
                             "advantage left to protect. Returns 400 if no "
                             "game has started or the current game is "
@@ -377,7 +404,7 @@ def create_api_app(game):
     def get_state():
         if not game.is_started():
             return error("no game in progress; POST /api/game to start one", 404)
-        return jsonify(game.state())
+        return jsonify(game.state(include_log=False))
 
     @app.get("/api/game/legal-moves")
     def get_legal_moves():
@@ -393,14 +420,22 @@ def create_api_app(game):
         body = request.get_json(silent=True) or {}
         move_str = body.get("move")
         chat = body.get("chat")
-        reasoning = body.get("reasoning")
+        tactical_reasoning = body.get("tactical_reasoning")
+        strategic_reasoning = body.get("strategic_reasoning")
         if not move_str:
             return error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
         try:
-            player_move, engine_move = game.make_move(move_str, chat=chat, reasoning=reasoning)
+            player_move, engine_move = game.make_move(
+                move_str, chat=chat,
+                tactical_reasoning=tactical_reasoning,
+                strategic_reasoning=strategic_reasoning,
+            )
         except GameError as e:
             return error(str(e))
-        return jsonify(move=player_move, engine_move=engine_move, state=game.state())
+        if player_move.get("forfeited"):
+            return jsonify(forfeited=True, by=player_move["by"],
+                            reasons=player_move["reasons"], state=game.state(include_log=False))
+        return jsonify(move=player_move, engine_move=engine_move, state=game.state(include_log=False))
 
     @app.post("/api/game/phone-a-friend")
     def post_phone_a_friend():
@@ -417,7 +452,7 @@ def create_api_app(game):
             advice = game.phone_a_friend(level, engine=engine_name)
         except GameError as e:
             return error(str(e))
-        return jsonify(advice=advice, state=game.state())
+        return jsonify(advice=advice, state=game.state(include_log=False))
 
     @app.get("/api/game/wait")
     def get_wait():

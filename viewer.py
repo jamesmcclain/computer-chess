@@ -188,7 +188,13 @@ PAGE = """<!doctype html>
   .start-row { display: flex; align-items: center; gap: 0.6rem; }
   .start-row label { color: #aaa; font-size: 0.82rem; width: 6rem; flex-shrink: 0; }
   .start-row select { font-size: 0.85rem; }
-  .friend-inputs { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+  .friend-inputs { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
+  .friend-engine-row { display: flex; flex-direction: column; gap: 0.25rem; }
+  .friend-engine-row .friend-inputs-tag.friend-engine-name {
+    color: #ccc; font-size: 0.78rem; font-weight: 600;
+  }
+  .friend-engine-pairs { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+  .friend-inputs-pair { display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
   .friend-inputs input[type="number"] {
     background: #1a1a1a; color: #eee; border: 1px solid #444; border-radius: 6px;
     padding: 0.25rem 0.4rem; font-size: 0.8rem; width: 3.2rem;
@@ -324,6 +330,12 @@ PAGE = """<!doctype html>
     background: #1a1a1a; border: 1px solid #5a3a3a; color: #d99;
   }
   #game-control-btn:hover { background: #2a1a1a; }
+  #resign-both-row { display: none; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .resign-side-btn {
+    all: unset; cursor: pointer; font-size: 0.75rem; padding: 0.3rem 0.8rem;
+    border-radius: 999px; background: #1a1a1a; border: 1px solid #5a3a3a; color: #d99;
+  }
+  .resign-side-btn:hover { background: #2a1a1a; }
 
   /* ---- last-move arrow ----------------------------------------------------
      A semi-transparent arrow drawn from a moved piece's old square to its
@@ -466,6 +478,10 @@ PAGE = """<!doctype html>
   </div>
 
   <button id="game-control-btn"></button>
+  <span id="resign-both-row" style="display:none;">
+    <button id="resign-white-btn" class="resign-side-btn">Resign white</button>
+    <button id="resign-black-btn" class="resign-side-btn">Resign black</button>
+  </span>
 
   <div id="board-row">
     <div id="eval-bar-wrap" title="">
@@ -492,6 +508,7 @@ const FILES = "abcdefgh";
 
 const PLAYER_TYPES = [
   { id: "api-user", label: "API user" },
+  { id: "api-trainee", label: "API trainee" },
   { id: "engine", label: "Engine" },
   { id: "web-user", label: "Web user (you)" },
 ];
@@ -516,6 +533,9 @@ const chatLogEl = document.getElementById("chat-log");
 const chatInputRowEl = document.getElementById("chat-input-row");
 const chatInputEl = document.getElementById("chat-input");
 const gameControlBtnEl = document.getElementById("game-control-btn");
+const resignBothRowEl = document.getElementById("resign-both-row");
+const resignWhiteBtnEl = document.getElementById("resign-white-btn");
+const resignBlackBtnEl = document.getElementById("resign-black-btn");
 const transcriptBtnEl = document.getElementById("transcript-btn");
 const evalBarWrapEl = document.getElementById("eval-bar-wrap");
 const evalBarEl = document.getElementById("eval-bar");
@@ -1062,7 +1082,7 @@ function sideLabel(state, color) {
     const engineName = state.engine_names && state.engine_names[color];
     const engineLabel = (ENGINE_TYPES.find(e => e.id === engineName) || {}).label || engineName || type;
     typeLabel = engineLabel + " (level " + state.engine_levels[color] + ")";
-  } else if (type === "api-user" && state.phone_a_friend) {
+  } else if ((type === "api-user" || type === "api-trainee") && state.phone_a_friend) {
     const f = state.phone_a_friend[color];
     if (f) {
       // Each engine has its own independent quota (see phone_a_friend()
@@ -1156,20 +1176,39 @@ function updateChatInput(state) {
 // whether a person could be behind either side of the current game.
 // ---------------------------------------------------------------------
 function resignColorFor(state) {
+  // Only meaningful when exactly one side is 'web-user': the page has no
+  // notion of which color the person at the keyboard is playing, so this
+  // only works if there's just one web-user side to assume it's them.
+  // When both sides are 'web-user' (two people sharing this page, or one
+  // person playing both), that assumption breaks down — see the two
+  // explicit per-color buttons in updateGameControls() instead.
   if (!state || !state.started) return null;
   const whiteIsWeb = state.players.white === "web-user";
   const blackIsWeb = state.players.black === "web-user";
   if (whiteIsWeb && !blackIsWeb) return "white";
   if (blackIsWeb && !whiteIsWeb) return "black";
-  if (whiteIsWeb && blackIsWeb) return state.turn; // both web: whoever's turn it is
   return null;
 }
 
 function updateGameControls(state) {
   if (!state.started || state.game_over) {
     gameControlBtnEl.style.display = "none";
+    resignBothRowEl.style.display = "none";
     return;
   }
+  const whiteIsWeb = state.players.white === "web-user";
+  const blackIsWeb = state.players.black === "web-user";
+  if (whiteIsWeb && blackIsWeb) {
+    // Neither "whoever's turn it is" nor any other guess can tell which
+    // color the clicking person is playing, so offer both explicitly
+    // instead of the single ambiguous button.
+    gameControlBtnEl.style.display = "none";
+    resignBothRowEl.style.display = "flex";
+    resignWhiteBtnEl.onclick = () => doResign("white");
+    resignBlackBtnEl.onclick = () => doResign("black");
+    return;
+  }
+  resignBothRowEl.style.display = "none";
   const resignColor = resignColorFor(state);
   gameControlBtnEl.style.display = "";
   gameControlBtnEl.textContent = resignColor ? "Resign" : "Restart";
@@ -1357,9 +1396,21 @@ async function initStartPanel() {
     l10Tag.className = "friend-inputs-tag";
     l10Tag.textContent = "\\u00d7 L10";
     const engTag = document.createElement("span");
-    engTag.className = "friend-inputs-tag";
-    engTag.textContent = eng.label + ":";
-    friendEnginesEl.append(engTag, l20, l20Tag, l10, l10Tag);
+    engTag.className = "friend-inputs-tag friend-engine-name";
+    engTag.textContent = eng.label;
+    const l20Pair = document.createElement("span");
+    l20Pair.className = "friend-inputs-pair";
+    l20Pair.append(l20, l20Tag);
+    const l10Pair = document.createElement("span");
+    l10Pair.className = "friend-inputs-pair";
+    l10Pair.append(l10, l10Tag);
+    const pairsRow = document.createElement("div");
+    pairsRow.className = "friend-engine-pairs";
+    pairsRow.append(l20Pair, l10Pair);
+    const engineRow = document.createElement("div");
+    engineRow.className = "friend-engine-row";
+    engineRow.append(engTag, pairsRow);
+    friendEnginesEl.append(engineRow);
     friendInputs[eng.id] = { l20, l10 };
   });
 
@@ -1367,15 +1418,18 @@ async function initStartPanel() {
   // engine-vs-engine game can (and often should, to be an interesting
   // game to watch) pit two different engines and/or difficulties
   // against each other. The "phone a friend" budget only matters if at
-  // least one side will be 'api-user' — it's set once for the whole
-  // game and tracked separately per side (see
+  // least one side will be 'api-user'/'api-trainee' — it's set once for
+  // the whole game and tracked separately per side (see
   // POST /api/game/phone-a-friend).
+  function isApiUserLike(value) {
+    return value === "api-user" || value === "api-trainee";
+  }
   function refreshLevelVisibility() {
     whiteEngineRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
     blackEngineRow.style.display = blackSel.value === "engine" ? "flex" : "none";
     whiteLevelRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
     blackLevelRow.style.display = blackSel.value === "engine" ? "flex" : "none";
-    const anyApiUser = whiteSel.value === "api-user" || blackSel.value === "api-user";
+    const anyApiUser = isApiUserLike(whiteSel.value) || isApiUserLike(blackSel.value);
     friendRow.style.display = anyApiUser ? "flex" : "none";
   }
   whiteSel.addEventListener("change", refreshLevelVisibility);
@@ -1408,7 +1462,7 @@ async function initStartPanel() {
       body.black_level = parseInt(blackLevelSel.value, 10);
       body.black_engine = blackEngineSel.value;
     }
-    if (whiteSel.value === "api-user" || blackSel.value === "api-user") {
+    if (isApiUserLike(whiteSel.value) || isApiUserLike(blackSel.value)) {
       const friendLimits = {};
       Object.entries(friendInputs).forEach(([engId, { l20, l10 }]) => {
         const tiers = {};
@@ -1518,7 +1572,7 @@ def create_viewer_app(game):
         anyone who'd rather poll than stream."""
         if not game.is_started():
             return jsonify({"started": False})
-        return jsonify(game.state())
+        return jsonify(game.state(include_eval=True))
 
     @app.get("/events")
     def events():
@@ -1529,7 +1583,7 @@ def create_viewer_app(game):
         def generate():
             version = -1  # guarantees the first wait_for_change() returns immediately
             while True:
-                payload, version = game.wait_for_change(version, timeout=20)
+                payload, version = game.wait_for_change(version, timeout=20, include_eval=True)
                 yield f"data: {json.dumps(payload)}\n\n"
 
         return Response(
@@ -1602,7 +1656,7 @@ def create_viewer_app(game):
                 white, black, level=level, white_level=white_level, black_level=black_level,
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
-                engine_friend_limits=engine_friend_limits,
+                engine_friend_limits=engine_friend_limits, include_eval=True,
             )
         except GameError as e:
             return _error(str(e))
@@ -1619,7 +1673,10 @@ def create_viewer_app(game):
             player_move, engine_move = game.make_move(move_str, chat=chat)
         except GameError as e:
             return _error(str(e))
-        return jsonify(move=player_move, engine_move=engine_move, state=game.state())
+        if player_move.get("forfeited"):
+            return jsonify(forfeited=True, by=player_move["by"],
+                            reasons=player_move["reasons"], state=game.state(include_eval=True))
+        return jsonify(move=player_move, engine_move=engine_move, state=game.state(include_eval=True))
 
     @app.get("/game/legal-moves")
     def game_legal_moves():
@@ -1641,7 +1698,7 @@ def create_viewer_app(game):
         body = request.get_json(silent=True) or {}
         player = body.get("player")
         try:
-            state = game.resign(player)
+            state = game.resign(player, include_eval=True)
         except GameError as e:
             return _error(str(e))
         return jsonify(state=state)
@@ -1655,7 +1712,7 @@ def create_viewer_app(game):
         engine-vs-engine match actually stops instead of continuing to
         play while the new-game form is filled out."""
         try:
-            state = game.abort()
+            state = game.abort(include_eval=True)
         except GameError as e:
             return _error(str(e))
         return jsonify(state=state)

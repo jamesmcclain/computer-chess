@@ -39,14 +39,28 @@ same reference as JSON.
 {"white": "api-user", "black": "engine", "level": 10}
 ```
 
-`white` and `black` are each one of three types: `"api-user"` (an API
-user that submits moves through this API), `"engine"` (GNU Chess or
-Stockfish — see `engine` below), or `"web-user"` (a person playing
-through the board viewer on port 5004, by clicking the board). Every
-combination is supported, including two engines. When both sides are
-`"engine"`, the two engines play each other. This game needs no
-further calls. It plays itself out in the background, one paced move
-at a time, so it streams to the board viewer like any other game.
+`white` and `black` are each one of four types: `"api-user"` (an API
+user that submits moves through this API), `"api-trainee"` (see
+below), `"engine"` (GNU Chess or Stockfish — see `engine` below), or
+`"web-user"` (a person playing through the board viewer on port 5004,
+by clicking the board). Every combination is supported, including two
+engines. When both sides are `"engine"`, the two engines play each
+other. This game needs no further calls. It plays itself out in the
+background, one paced move at a time, so it streams to the board
+viewer like any other game.
+
+`"api-trainee"` behaves exactly like `"api-user"` — same REST calls,
+same responses — except it enforces a discipline on top: every move
+must be preceded by a `POST /api/game/phone-a-friend` call, for as
+long as that side still has any phone-a-friend budget left (see
+`friend_level10_limit` etc. below), and must include both
+`tactical_reasoning` and `strategic_reasoning` (see
+`POST /api/game/move` below, where they're optional for every other
+type). Skipping either forfeits the game immediately: the submitted
+move is discarded — never applied to the board — and the game ends on
+the spot with status `"forfeited"` and the other side declared the
+winner. There is no warning and no second attempt; a trainee side gets
+exactly one chance per move to follow the process.
 
 `level` (optional, `0`-`20`, weakest to strongest — Stockfish's own
 native "Skill Level" scale) sets the difficulty for both sides at
@@ -71,14 +85,15 @@ below to set or change a name for a game already in progress.
 `friend_level10_limit` and `friend_level20_limit` (each optional,
 integers `0`-`50` or `-1` for unlimited, default `2` and `1`
 respectively) set this game's "phone a friend" budget: how many
-level-10 and level-20 engine hints an `"api-user"` side may request
-over the course of the game, for *every* engine at once. Each engine's
+level-10 and level-20 engine hints an `"api-user"`/`"api-trainee"`
+side may request over the course of the game, for *every* engine at
+once. Each engine's
 quota is tracked separately, not pooled — `friend_limits` (optional,
 an object of the form `{engine_name: {tier: limit}}`, e.g.
 `{"stockfish": {"10": 5}, "gnuchess": {"20": 0}}`) sets one or more
 engines' budgets at one or both tiers specifically, and wins over the
-generic fields for whichever engine/tier it names — so an
-`"api-user"` side can be given, say, 5 GNU Chess hints and 1 Stockfish
+generic fields for whichever engine/tier it names — so a
+side can be given, say, 5 GNU Chess hints and 1 Stockfish
 hint, independent of each other, and this scales to however many
 engines the server supports. Any limit, generic or per-engine, can be
 `-1` instead of a number, which makes that tier (for that engine, or
@@ -180,12 +195,13 @@ running. Response: `{"player_names": {"white": "Deep Purple", "black": null}}`.
 }
 ```
 
-The eval bar (see `state.eval` under `GET /api/game` below) is a live
-Stockfish read on who is winning, shown as a vertical bar in the board
-viewer. It runs on its own dedicated Stockfish process, always at full
-strength — entirely separate from any engine playing a side of the game
-or answering a `POST /api/game/phone-a-friend` query, so it never
-shares a Skill Level setting or slows down a move. `quality` (see
+The eval bar is a live Stockfish read on who is winning, shown as a
+vertical bar in the board viewer — it is not part of the JSON API's
+`GET /api/game` response (see below). It runs on its own dedicated
+Stockfish process, always at full strength — entirely separate from any
+engine playing a side of the game or answering a
+`POST /api/game/phone-a-friend` query, so it never shares a Skill Level
+setting or slows down a move. `quality` (see
 `POST /api/game/eval-quality` below) trades update latency against
 accuracy; each entry's `description` is meant to be shown directly to a
 person choosing between them, not just read in this reference.
@@ -234,17 +250,19 @@ move.
       "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
     }
   },
-  "eval": {"quality": "balanced", "pov": "white", "score_cp": 31, "mate": null, "pending": false, "error": null},
   "fullmove_number": 1,
   "halfmove_clock": 0,
-  "move_log": [{"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"}]
+  "last_move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"}
 }
 ```
 
 `status` is one of: `not_started`, `in_progress`, `checkmate`,
 `stalemate`, `draw_insufficient_material`, `draw_75_moves`,
 `draw_5fold_repetition`, `draw_claimable_50_moves`,
-`draw_claimable_threefold_repetition`, `resigned`, `aborted`.
+`draw_claimable_threefold_repetition`, `resigned`, `aborted`,
+`forfeited` (an `"api-trainee"` side skipped a required
+phone-a-friend call or reasoning field — see `POST /api/game` and
+`POST /api/game/move`).
 
 `engine_names` shows which engine (`"gnuchess"` or `"stockfish"`)
 plays each `"engine"` side — see `POST /api/game/engine` above. Its
@@ -254,26 +272,27 @@ entry for a non-`"engine"` side has no meaning.
 `POST /api/game` time) and each side's usage/remaining count at each
 tier, broken out per engine — GNU Chess hints and Stockfish hints draw
 on independent quotas, not a shared one. See
-`POST /api/game/phone-a-friend` below. Only an `"api-user"` side can
-use it, but the field is always present so anyone reading the state
-can see the budget.
+`POST /api/game/phone-a-friend` below. Only an `"api-user"`/
+`"api-trainee"` side can use it, but the field is always present so
+anyone reading the state can see the budget.
 
-`eval` is the eval bar's current assessment of the position — see
-`GET /api/eval-qualities` and `POST /api/game/eval-quality` above.
-`score_cp` (centipawns, positive favors White) or `mate` (moves to
-mate; positive means White mates, negative means Black mates) is set,
-never both. `pending` is `true` while a fresh evaluation for the
-current position is still being computed — `score_cp`/`mate` hold the
-previous position's values in the meantime, so a reader doesn't see the
-bar snap to neutral on every move (both are `null` right after a new
-game, before the first evaluation completes). `error` is set only if
-the eval engine itself failed.
+There is no `eval` field in this JSON API response — the eval bar (see
+`GET /api/eval-qualities` and `POST /api/game/eval-quality` above) is a
+board-viewer-only feature for spectators.
 
-Each `move_log` entry's `name` is that side's display name at the time
-of the move, or `null` if none was set (see `POST /api/game/name`
-above). Its `chat` is present only if that move carried a chat line
-(see `POST /api/game/move` below). There is no standalone chat
-channel — every chat line belongs to a move.
+`last_move` is the most recent entry from the game's internal move
+log, or `null` before any move has been made. Its `name` is that
+side's display name at the time of the move, or `null` if none was
+set (see `POST /api/game/name` above). Its `chat` is present only if
+that move carried a chat line (see `POST /api/game/move` below).
+There is no standalone chat channel — every chat line belongs to a
+move. This endpoint, `POST /api/game/move`, `POST
+/api/game/phone-a-friend`, and `GET /api/game/wait` all return only
+this one entry, not the full move log, so their response size stays
+constant no matter how long the game runs — safe to call once per
+move in a loop. The board viewer (port 5004) is the one place the
+full move log is exposed, since it renders the whole game's history
+and chat.
 
 If no game has started, this endpoint returns `404`.
 
@@ -302,7 +321,7 @@ started. A timed-out response looks the same as any other: check
 ### `POST /api/game/move` — submit a move
 
 ```json
-{"move": "e2e4", "chat": "Good luck!", "reasoning": "e4 grabs the center"}
+{"move": "e2e4", "chat": "Good luck!", "tactical_reasoning": "no immediate tactics", "strategic_reasoning": "e4 grabs the center"}
 ```
 
 This endpoint accepts UCI notation (`e2e4`, `e7e8q` for promotion) or
@@ -320,14 +339,18 @@ opponent sees both the next time they read the game state — for
 example, the response to their own next move. A person watching the
 board viewer sees it there too, next to the move.
 
-`reasoning` (optional, up to 1000 characters, also trimmed rather
-than rejected if longer) is a private note on why this move was
-chosen. Unlike `chat`, it is never returned by this or any other
-endpoint while the game is in progress. It is kept server-side only,
-for example for later review by whoever is operating the server. The
-one exception is `GET /api/game/transcript` (below): once the game
-has ended, reasoning is folded into that game's transcript, since
-there is no longer any ongoing advantage to protect.
+`tactical_reasoning` and `strategic_reasoning` (up to 1000 characters
+each, also trimmed rather than rejected if longer; optional for
+`"api-user"`/`"web-user"`, **required** for `"api-trainee"` — see
+below) are private notes on why this move was chosen —
+`tactical_reasoning` for concrete, move-local calculation (captures,
+checks, threats), `strategic_reasoning` for the longer-term plan
+behind it. Unlike `chat`, neither is ever returned by this or any
+other endpoint while the game is in progress. Both are kept
+server-side only, for example for later review by whoever is
+operating the server. The one exception is `GET /api/game/transcript`
+(below): once the game has ended, both are folded into that game's
+transcript, since there is no longer any ongoing advantage to protect.
 
 ```json
 {"move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"},
@@ -339,17 +362,37 @@ This endpoint returns `400` for an illegal or unparseable move, for a
 move submitted during the engine's turn, or when no game is in
 progress.
 
+**`"api-trainee"` forfeits.** If the side to move is `"api-trainee"`
+and it either didn't call `POST /api/game/phone-a-friend` before this
+move (while it still had budget left) or omitted
+`tactical_reasoning`/`strategic_reasoning`, the move is discarded —
+never parsed, never applied to the board — and the game ends
+immediately: the other side wins. The response shape is different in
+this case:
+
+```json
+{"forfeited": true, "by": "white", "reasons": ["no phone-a-friend call before this move, despite having queries left"], "state": {...}}
+```
+
+Check for the `"forfeited"` key rather than assuming the ordinary
+`{"move", "engine_move", "state"}` shape whenever the mover is
+`"api-trainee"`.
+
 ### `POST /api/game/phone-a-friend` — ask an engine for a move recommendation
 
 ```json
 {"level": 20, "engine": "stockfish"}
 ```
 
-For the `"api-user"` side to move only. Asks an engine what it would
-play in the current position, without submitting that move: the board
-is unchanged, your turn does not end, and this is not a substitute for
-`POST /api/game/move` — you still submit your own move afterward,
-whether or not you take the suggestion.
+For the `"api-user"`/`"api-trainee"` side to move only. Asks an engine
+what it would play in the current position, without submitting that
+move: the board is unchanged, your turn does not end, and this is not
+a substitute for `POST /api/game/move` — you still submit your own
+move afterward, whether or not you take the suggestion. For an
+`"api-trainee"` side, a successful call here — any level, any engine —
+satisfies that side's phone-a-friend requirement for the move it's
+about to submit (see the forfeit rule above); required before every
+move for as long as any budget remains.
 
 `level` is `10` or `20` — these are the only two tiers offered. Each
 has its own budget for the game, per engine — set at `POST /api/game`
@@ -361,7 +404,7 @@ for unlimited — then this call never fails for running out of
 queries at that tier for that engine. `engine` (optional,
 `"gnuchess"` or `"stockfish"`) picks which engine to ask; defaults to
 `"gnuchess"` if omitted. GNU Chess hints and Stockfish hints draw on
-independent quotas, not a shared one — an `"api-user"` side can use
+independent quotas, not a shared one — a side can use
 both.
 
 ```json
@@ -369,9 +412,10 @@ both.
  "state": {...}}
 ```
 
-Returns `400` if it is not your turn, your side is not `"api-user"`,
-`level` is not `10` or `20`, `engine` is not a valid engine name, or
-you have no queries left at that level for that engine. Current
+Returns `400` if it is not your turn, your side is not `"api-user"`/
+`"api-trainee"`, `level` is not `10` or `20`, `engine` is not a valid
+engine name, or you have no queries left at that level for that
+engine. Current
 budget and usage for both sides, at both engines, is always visible in
 `state.phone_a_friend` (see `GET /api/game` above), whether or not
 you've called this endpoint yet.
@@ -408,11 +452,19 @@ file rather than displaying it.
 
 Metadata (players, result, engine names and levels where relevant, and
 how the game ended) is in the PGN tag pairs at the top. Every move's
-`chat` (see `POST /api/game/move` above) and any private `reasoning`
-recorded for it are folded in as a PGN comment on that move —
-`reasoning` is otherwise never returned by any endpoint, but once the
-game is over there is no ongoing advantage left to protect. For
-example:
+`chat` (see `POST /api/game/move` above), any private
+`tactical_reasoning`/`strategic_reasoning` recorded for it, and the
+eval bar's own read of the resulting position (if the eval bar was on)
+are folded in as a PGN comment on that move — chat and reasoning are
+otherwise never returned by any endpoint, and the eval bar's live read
+is never returned by the JSON API at all (see `GET /api/game` above),
+but once the game is over there is no ongoing advantage left to
+protect, so the transcript includes whatever read was captured for
+each move at the time; a move with the eval bar off, or a read still
+pending when a later move superseded it, has no `Eval:` comment. Scores are
+pawns from white's point of view (`+0.34` = white better by about a
+third of a pawn, `-1.20` = black better by a bit over a pawn), or
+`#N`/`#-N` for a forced mate in N by white/black. For example:
 
 ```
 [Event "computer-chess"]
@@ -428,8 +480,8 @@ example:
 [BlackEngineLevel "10"]
 [Termination "checkmate"]
 
-1. e4 {Chat: Good luck! / Reasoning: e4 grabs the center} e5 2. Qh5 Nc6
-3. Bc4 Nf6 4. Qxf7# {Chat: gg} 1-0
+1. e4 {Chat: Good luck! / Tactical: no immediate tactics / Strategic: e4 grabs the center / Eval: +0.34} e5 2. Qh5 Nc6
+3. Bc4 Nf6 4. Qxf7# {Chat: gg / Eval: #3} 1-0
 ```
 
 Returns `400` if no game has started, or the current game is still
