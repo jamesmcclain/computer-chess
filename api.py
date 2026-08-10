@@ -8,9 +8,14 @@ from flask import Flask, Response, jsonify, request
 
 from game import (
     DEFAULT_EVAL_QUALITY,
+    DEFAULT_FRIEND_EVAL_LIMIT,
+    DEFAULT_FRIEND_KIND,
     DEFAULT_FRIEND_LIMITS,
     ENGINE_NAMES,
     EVAL_QUALITIES,
+    FRIEND_EVAL_KEY,
+    FRIEND_EVAL_TIME_LIMIT,
+    FRIEND_KINDS,
     FRIEND_LEVELS,
     FRIEND_LIMIT_MAX,
     FRIEND_LIMIT_MIN,
@@ -48,6 +53,11 @@ API_DOC = {
                      "friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
                                               f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
                                               f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]}, every engine",
+                     "friend_eval_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
+                                           f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
+                                           f"default {DEFAULT_FRIEND_EVAL_LIMIT}; budget for the "
+                                           "'eval' kind of phone-a-friend query, which is separate "
+                                           "from the per-engine move-hint budgets above",
                      "friend_limits": "optional, object of the form "
                                        "{engine_name: {tier: limit}} — e.g. "
                                        f'{{"stockfish": {{"{FRIEND_LEVELS[0]}": 5}}}}; '
@@ -212,15 +222,38 @@ API_DOC = {
                             "GET /api/game in a loop.",
         },
         "POST /api/game/phone-a-friend": {
-            "body": {"level": f"one of: {', '.join(str(l) for l in FRIEND_LEVELS)}",
+            "body": {"kind": f"optional, one of: {', '.join(FRIEND_KINDS)}, "
+                              f"defaults to {DEFAULT_FRIEND_KIND}",
+                     "level": f"one of: {', '.join(str(l) for l in FRIEND_LEVELS)} "
+                               "— required for kind 'move', not used by kind 'eval'",
                      "engine": f"optional, one of: {', '.join(ENGINE_NAMES)}, "
-                               "defaults to gnuchess"},
+                               "defaults to gnuchess — applies to kind 'move' "
+                               "only; kind 'eval' is always Stockfish"},
             "description": "For the 'api-user'/'api-trainee' side to move "
-                            "only: ask an "
+                            "only: ask for help with the current position "
+                            "without submitting a move. Two kinds. "
+                            "kind 'move' (the default) asks an "
                             "engine what it would play in the current "
-                            "position, without submitting that move. Does "
-                            "not change the board, does not end your "
-                            "turn, and is not a substitute for "
+                            "position, without submitting that move. "
+                            "kind 'eval' asks a different question — not "
+                            "what to play but who is winning and by how "
+                            "much — answered by Stockfish at full "
+                            f"strength ({FRIEND_EVAL_TIME_LIMIT:g}s of search, "
+                            "never weakened by either side's difficulty "
+                            "setting, and unaffected by whether the board "
+                            "viewer's eval bar is switched on). It returns "
+                            "'score_cp' (centipawns) and 'mate', both from "
+                            "*white's* point of view whichever side asked, "
+                            "plus 'eval' (the same reading preformatted, "
+                            "e.g. '+0.34' or '#3') and 'favors' ('white', "
+                            "'black' or 'equal') so the sign cannot be "
+                            "misread. Its budget is tracked separately "
+                            f"from the move-hint budgets, under '{FRIEND_EVAL_KEY}' "
+                            "in 'phone_a_friend' — see 'friend_eval_limit' "
+                            "on POST /api/game. Either kind satisfies an "
+                            "'api-trainee' side's per-move phone-a-friend "
+                            "requirement. Neither kind changes the board, "
+                            "ends your turn, or is a substitute for "
                             "POST /api/game/move — you still submit your "
                             "own move afterward, whether or not you take "
                             "the suggestion. Each of the two levels "
@@ -451,6 +484,7 @@ def create_api_app(game):
         black_name = body.get("black_name")
         friend_level10_limit = body.get("friend_level10_limit")
         friend_level20_limit = body.get("friend_level20_limit")
+        friend_eval_limit = body.get("friend_eval_limit")
         friend_limits = body.get("friend_limits")
         try:
             engine_friend_limits = None
@@ -468,6 +502,7 @@ def create_api_app(game):
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 white_name=white_name, black_name=black_name,
                 friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
+                friend_eval_limit=friend_eval_limit,
                 engine_friend_limits=engine_friend_limits,
                 state_opts=_state_opts(CONTEXT_STATE),
             )
@@ -527,16 +562,23 @@ def create_api_app(game):
     @app.post("/api/game/phone-a-friend")
     def post_phone_a_friend():
         body = request.get_json(silent=True) or {}
+        kind = body.get("kind") or DEFAULT_FRIEND_KIND
         level = body.get("level")
         engine_name = body.get("engine")
-        if level is None:
-            return error(f"'level' is required (one of: {', '.join(str(l) for l in FRIEND_LEVELS)})")
+        if kind not in FRIEND_KINDS:
+            return error(f"'kind' must be one of: {', '.join(FRIEND_KINDS)}")
+        # 'level' picks a tier of move hint, so it is required for a
+        # 'move' query and meaningless for an 'eval' one, which has no
+        # tiers and only ever asks Stockfish at full strength.
+        if kind == "move":
+            if level is None:
+                return error(f"'level' is required (one of: {', '.join(str(l) for l in FRIEND_LEVELS)})")
+            try:
+                level = int(level)
+            except (TypeError, ValueError):
+                return error(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
         try:
-            level = int(level)
-        except (TypeError, ValueError):
-            return error(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
-        try:
-            advice = game.phone_a_friend(level, engine=engine_name)
+            advice = game.phone_a_friend(level, engine=engine_name, kind=kind)
         except GameError as e:
             return error(str(e))
         return jsonify(advice=advice, state=game.state(**_state_opts(LEAN_STATE)))

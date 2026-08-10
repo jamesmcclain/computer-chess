@@ -101,8 +101,15 @@ for every engine via the generic fields) unlimited for the game — the
 query never fails for running out. Like the name fields above, none
 of these are sticky — every new game gets the defaults shown above
 unless overridden here,
-and usage always resets to zero. See `POST /api/game/phone-a-friend`
-below.
+and usage always resets to zero.
+
+`friend_eval_limit` (optional, `0`-`50` or `-1` for unlimited, default
+`1`) is a separate budget again, for the `"eval"` kind of
+phone-a-friend query — a full-strength Stockfish assessment of who is
+winning, rather than a move recommendation. It has no engine choice and
+no tier, so it sits outside `friend_limits`' `{engine: {tier: limit}}`
+grid and is set on its own. It resets per game like the rest. See
+`POST /api/game/phone-a-friend` below.
 
 If `white` is `"engine"` and `black` is not, that engine plays its
 opening move immediately. The response returns this move as
@@ -261,8 +268,8 @@ and the expanded `phone_a_friend` breakdown back.
   "engine_levels": {"white": 10, "black": 10},
   "engine_names": {"white": "gnuchess", "black": "stockfish"},
   "phone_a_friend": {
-    "white": {"gnuchess": "2/1", "stockfish": "2/1"},
-    "black": {"gnuchess": "2/1", "stockfish": "2/1"}
+    "white": {"gnuchess": "2/1", "stockfish": "2/1", "stockfish_eval": "1"},
+    "black": {"gnuchess": "2/1", "stockfish": "2/1", "stockfish_eval": "1"}
   },
   "fullmove_number": 1,
   "halfmove_clock": 0,
@@ -284,9 +291,12 @@ entry for a non-`"engine"` side has no meaning.
 
 `phone_a_friend` shows how many hints each side has left, broken out
 per engine — GNU Chess hints and Stockfish hints draw on independent
-quotas, not a shared one. Each value is the count *remaining* at each
-tier, joined by a slash in tier order (`"level_10/level_20"`), where
-`-1` means unlimited. So `"2/1"` is two level-10 hints and one level-20
+quotas, not a shared one — plus `stockfish_eval`, the separate budget
+for the `"eval"` kind of query (see
+`POST /api/game/phone-a-friend` below). Each engine value is the count
+*remaining* at each tier, joined by a slash in tier order
+(`"level_10/level_20"`), where `-1` means unlimited. `stockfish_eval`
+has a single tier, so it is one bare number. So `"2/1"` is two level-10 hints and one level-20
 hint still available, and `"0/0"` means that engine is exhausted. See
 `POST /api/game/phone-a-friend` below. Only an `"api-user"`/
 `"api-trainee"` side can use it, but the field is always present,
@@ -300,10 +310,15 @@ counts:
 
 ```json
 "phone_a_friend": {
-  "limits": {"gnuchess": {"level_10": 2, "level_20": 1}, "stockfish": {"level_10": 2, "level_20": 1}},
+  "limits": {
+    "gnuchess": {"level_10": 2, "level_20": 1},
+    "stockfish": {"level_10": 2, "level_20": 1},
+    "stockfish_eval": {"eval": 1}
+  },
   "white": {
     "gnuchess": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
-    "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}}
+    "stockfish": {"used": {"level_10": 0, "level_20": 0}, "remaining": {"level_10": 2, "level_20": 1}},
+    "stockfish_eval": {"used": {"eval": 0}, "remaining": {"eval": 1}}
   },
   "black": {"...": "same shape"}
 }
@@ -435,21 +450,29 @@ Check for the `"forfeited"` key rather than assuming the ordinary
 `{"move", "engine_move", "state"}` shape whenever the mover is
 `"api-trainee"`.
 
-### `POST /api/game/phone-a-friend` — ask an engine for a move recommendation
+### `POST /api/game/phone-a-friend` — ask an engine for help
 
 ```json
 {"level": 20, "engine": "stockfish"}
+{"kind": "eval"}
 ```
 
-For the `"api-user"`/`"api-trainee"` side to move only. Asks an engine
-what it would play in the current position, without submitting that
-move: the board is unchanged, your turn does not end, and this is not
-a substitute for `POST /api/game/move` — you still submit your own
-move afterward, whether or not you take the suggestion. For an
-`"api-trainee"` side, a successful call here — any level, any engine —
-satisfies that side's phone-a-friend requirement for the move it's
-about to submit (see the forfeit rule above); required before every
-move for as long as any budget remains.
+For the `"api-user"`/`"api-trainee"` side to move only. Asks for help
+with the current position without submitting a move: the board is
+unchanged, your turn does not end, and this is not a substitute for
+`POST /api/game/move` — you still submit your own move afterward,
+whether or not you act on the answer. For an `"api-trainee"` side, a
+successful call here — either kind, any level, any engine — satisfies
+that side's phone-a-friend requirement for the move it's about to
+submit (see the forfeit rule above); required before every move for as
+long as any budget remains.
+
+`kind` (optional, `"move"` or `"eval"`, default `"move"`) picks what
+you are asking for. The two draw on separate budgets, because they
+answer different questions and spending one should not cost you the
+other.
+
+#### `kind: "move"` — what should I play?
 
 `level` is `10` or `20` — these are the only two tiers offered. Each
 has its own budget for the game, per engine — set at `POST /api/game`
@@ -465,17 +488,63 @@ independent quotas, not a shared one — a side can use
 both.
 
 ```json
-{"advice": {"level": 20, "engine": "stockfish", "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},
+{"advice": {"kind": "move", "level": 20, "engine": "stockfish", "uci": "g1f3", "san": "Nf3", "color": "white", "used": 1, "limit": 1, "remaining": 0},
  "state": {...}}
 ```
 
+#### `kind: "eval"` — who is winning?
+
+```json
+{"kind": "eval"}
+```
+
+Asks Stockfish how the current position stands, rather than what to
+play. `level` and `engine` do not apply: there is only one tier, and
+the answer always comes from Stockfish.
+
+This is the strongest assessment the server can produce. It runs on
+the eval bar's dedicated Stockfish process, whose Skill Level is never
+lowered from Stockfish's own default, for a full 5 seconds — the same
+search budget as a level-20 move hint. Neither side's configured
+difficulty affects it. Nor does the eval bar's quality setting: `off`
+(see `POST /api/game/eval-quality`) turns off the *spectators'* bar and
+has no bearing on whether a player may spend one of their own queries.
+
+```json
+{"advice": {"kind": "eval", "engine": "stockfish", "color": "white",
+            "score_cp": 34, "mate": null, "pov": "white",
+            "eval": "+0.34", "favors": "white",
+            "used": 1, "limit": 1, "remaining": 0},
+ "state": {...}}
+```
+
+`score_cp` is centipawns and `mate` is the number of moves to a forced
+mate (`null` when there is none) — and **both are from white's point of
+view, whichever side asked**, matching the eval bar and the transcript.
+So `-2.50` means black is ahead by about two and a half pawns even when
+black is the one who asked. `eval` is the same reading preformatted
+(`"+0.34"`, `"#3"`, `"#-2"`), and `favors` is `"white"`, `"black"` or
+`"equal"` outright, so the sign cannot be misread. Exactly one of
+`score_cp` and `mate` is non-`null`.
+
+Its budget is `friend_eval_limit` at `POST /api/game` time (default
+`1`, or `-1` for unlimited), tracked per side, and reported under
+`stockfish_eval` in `state.phone_a_friend` rather than beside the
+per-engine tiers, since it is not one of them.
+
+#### Errors and budget visibility
+
 Returns `400` if it is not your turn, your side is not `"api-user"`/
-`"api-trainee"`, `level` is not `10` or `20`, `engine` is not a valid
-engine name, or you have no queries left at that level for that
-engine. Current
-budget and usage for both sides, at both engines, is always visible in
-`state.phone_a_friend` (see `GET /api/game` above), whether or not
-you've called this endpoint yet.
+`"api-trainee"`, `kind` is not `"move"` or `"eval"`, `level` is not
+`10` or `20` on a `"move"` query, `engine` is not a valid engine name,
+or you have no queries left in the budget being drawn on. A query that
+fails for any of these reasons — including an engine that cannot
+analyze the position — costs you nothing.
+
+Current budget and usage for both sides, across both engines and the
+`stockfish_eval` budget, is always visible in `state.phone_a_friend`
+(see `GET /api/game` above), whether or not you've called this
+endpoint yet.
 
 ### `POST /api/game/resign` — resign
 

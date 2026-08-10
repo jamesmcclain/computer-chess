@@ -43,9 +43,10 @@ Core facts to remember:
   your color — do not assume; the user's request at game start is what
   determines this, not anything you infer mid-game), every move has
   two hard requirements, checked *before* the move is applied:
-  - You must call `POST /api/game/phone-a-friend` (any level, any
-    engine) at some point since your last move, unless you have zero
-    phone-a-friend budget left at every level and engine (check
+  - You must call `POST /api/game/phone-a-friend` (either kind, any
+    level, any engine) at some point since your last move, unless you
+    have zero phone-a-friend budget left everywhere — every level, every
+    engine, *and* the `stockfish_eval` budget (check
     `state.phone_a_friend` for your color). See section 4.5.
   - You must include both `tactical_reasoning` and
     `strategic_reasoning` on the move (this skill already requires
@@ -89,12 +90,17 @@ Core facts to remember:
   `tactical_reasoning` and `strategic_reasoning` are where your
   analysis goes — they stay private while the game is in progress.
   Display name (also in section 2) stays optional.
-- **You can "phone a friend" for a move recommendation** (as
-  `"api-user"` or `"api-trainee"`). This asks an engine for its move
-  choice in the current position, without submitting that move or
-  ending your turn. Each game gives you a small budget of level-20 and
-  level-10 queries — 1 and 2 by default — tracked separately for GNU
-  Chess and Stockfish, so you can draw on both. See section 4.5.
+- **You can "phone a friend" for help with a position** (as
+  `"api-user"` or `"api-trainee"`), without submitting a move or
+  ending your turn. Two kinds:
+  - `"move"` (the default) asks an engine what it would play. Each
+    game gives you a small budget of level-20 and level-10 queries — 1
+    and 2 by default — tracked separately for GNU Chess and Stockfish,
+    so you can draw on both.
+  - `"eval"` asks Stockfish, at full strength, *who is winning* rather
+    than what to play. Its own separate budget — 1 by default.
+
+  See section 4.5.
 - **Once the game ends, a PGN transcript is available.** It folds in
   every move's chat, tactical reasoning, strategic reasoning, and eval
   bar read. See section 5.1.
@@ -168,6 +174,10 @@ Content-Type: application/json
   set them here, and usage always starts at zero. Raise them if the
   user wants more hints, set one to `-1` if they want no cap at all,
   or set any to `0` to turn that tier off for that engine.
+- `friend_eval_limit` (optional, integer, default `1`) is a separate
+  budget again, for the `"eval"` kind of phone-a-friend query — see
+  section 4.5. It has no engine or tier, so it is set on its own rather
+  than through `friend_limits`. `-1` for unlimited, `0` to turn it off.
 - **Two engines can play each other, for a user who wants to watch
   instead of play.** Set both `white` and `black` to `"engine"`, with
   different `white_level`/`black_level` if you want. Neither side
@@ -504,29 +514,59 @@ not as a substitute for choosing and submitting your own move
 
 **If you are playing as `"api-trainee"`,** this call is not optional:
 you must make it before every move for as long as you have any budget
-left at any level or engine (see the core facts above). Make it a
-standing step in your move loop for that game — check
-`state.phone_a_friend` for your color, and if any tier still shows
-budget, call this endpoint (any level, any engine satisfies the
-requirement) before `POST /api/game/move`. Skipping it when budget
+left — at any level, any engine, or in the `stockfish_eval` budget (see
+the core facts above). Make it a standing step in your move loop for
+that game — check `state.phone_a_friend` for your color, and if
+anything still shows budget, call this endpoint (either kind, any
+level, any engine satisfies the requirement) before
+`POST /api/game/move`. Skipping it when budget
 remains forfeits the game on the spot, with no warning first.
 
 ```
 POST /api/game/phone-a-friend
 Content-Type: application/json
 
-{"level": 20, "engine": "stockfish"}
+{"level": 20, "engine": "stockfish"}     # kind "move" — what should I play?
+{"kind": "eval"}                          # kind "eval" — who is winning?
 ```
 
-- `level` is `10` or `20` — no other value. Level 20 gives a stronger
-  recommendation. Level 10 is weaker. Pick level 20 for a critical,
-  hard-to-read position. Level 10 is enough for a routine check.
+- `kind` (optional, `"move"` or `"eval"`, default `"move"`) picks what
+  you are asking for. The two have separate budgets, so spending one
+  does not cost you the other.
+- For `kind: "move"`, `level` is `10` or `20` — no other value. Level
+  20 gives a stronger recommendation. Level 10 is weaker. Pick level 20
+  for a critical, hard-to-read position. Level 10 is enough for a
+  routine check.
 - `engine` (optional, `"gnuchess"` or `"stockfish"`, default
-  `"gnuchess"`) picks which engine to ask.
+  `"gnuchess"`) picks which engine to ask. Applies to `kind: "move"`
+  only — `kind: "eval"` is always Stockfish.
+- `kind: "eval"` takes no `level` and no `engine`. It returns
+  Stockfish's assessment of the position at full strength:
+  ```json
+  {"advice": {"kind": "eval", "engine": "stockfish", "score_cp": 34, "mate": null,
+              "pov": "white", "eval": "+0.34", "favors": "white",
+              "used": 1, "limit": 1, "remaining": 0}, "state": {...}}
+  ```
+  **`score_cp` and `mate` are always from white's point of view, no
+  matter which side you are playing.** A positive score favors white.
+  Read `favors` (`"white"`, `"black"` or `"equal"`) instead of working
+  the sign out yourself — that is what it is there for. `eval` is the
+  same reading preformatted (`"+0.34"`, `"#3"` for mate in 3 for white,
+  `"#-2"` for mate in 2 for black). Exactly one of `score_cp` and
+  `mate` is set; the other is `null`.
+  Use it when you cannot tell whether you stand better or worse — after
+  a messy exchange, or when deciding whether to force a draw. It does
+  not tell you what to play; ask for a `"move"` query if that is what
+  you need.
+- Its budget is separate from the move-hint budgets and shows as
+  `stockfish_eval` in `state.phone_a_friend`. It defaults to 1 per
+  game, per side.
 - Each level has its own budget for the whole game, per engine, set at
   game start (`friend_level10_limit`/`friend_level20_limit` for every
   engine at once, or the per-engine `friend_limits` field, section 1
-  — default `2` for level 10, `1` for level 20).
+  — default `2` for level 10, `1` for level 20). The `"eval"` kind has
+  its own budget again, set by `friend_eval_limit` (section 1, default
+  `1`).
   GNU Chess hints and Stockfish hints draw on independent quotas, not
   a shared one — asking GNU Chess for a hint does not use up your
   Stockfish budget, and vice versa. Each side has its own budget too,
@@ -559,23 +599,26 @@ Response:
   `"level_10/level_20"`, where `-1` means unlimited:
   ```json
   "phone_a_friend": {
-    "white": {"gnuchess": "2/1", "stockfish": "2/0"},
-    "black": {"gnuchess": "2/1", "stockfish": "2/1"}
+    "white": {"gnuchess": "2/1", "stockfish": "2/0", "stockfish_eval": "1"},
+    "black": {"gnuchess": "2/1", "stockfish": "2/1", "stockfish_eval": "1"}
   }
   ```
   So `"2/0"` means two level-10 queries left and no level-20 queries
   left for that engine. `"0/0"` means that engine is exhausted — try
-  the other engine, or decide on your own.
+  the other engine, the `"eval"` kind, or decide on your own.
+  `stockfish_eval` has one tier, so it is a single number.
 - `400` means one of these:
   - it was not your turn
   - your side was not `"api-user"`/`"api-trainee"`
-  - `level` was not `10` or `20`
+  - `kind` was not `"move"` or `"eval"`
+  - `level` was not `10` or `20` on a `"move"` query
   - `engine` was not a valid engine name
-  - you had no queries left at that level for that engine
+  - you had no queries left in the budget you drew on
 
   Read the `error` field. If you are out of budget at one level for
-  one engine, try the other level, the other engine (if you still have
-  queries there), or decide on your own.
+  one engine, try the other level, the other engine, the `"eval"` kind
+  (if you still have queries there), or decide on your own. A failed
+  call costs you nothing.
 - Using this is optional. Call it only when it will truly help, in a
   hard or unclear position — not on every move, since your budget is
   small by design. When you use it, mention to the user that you

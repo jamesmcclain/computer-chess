@@ -518,6 +518,12 @@ const ENGINE_TYPES = [
   { id: "stockfish", label: "Stockfish" },
 ];
 
+// Mirrors FRIEND_EVAL_KEY in game.py: the key the "eval" phone-a-friend
+// kind's budget appears under in state.phone_a_friend, beside the
+// per-engine move-hint budgets. Not an entry in ENGINE_TYPES above — no
+// side can be played by it; it only ever answers "who is winning?".
+const FRIEND_EVAL_KEY = "stockfish_eval";
+
 const boardWrapEl = document.getElementById("board-wrap");
 const boardEl = document.getElementById("board");
 const statusEl = document.getElementById("status");
@@ -1095,7 +1101,17 @@ function sideLabel(state, color) {
         if (!eng || !limits) return null;
         return e.label + " " + fmtTier(eng.remaining.level_20, limits.level_20) + " L20, " +
           fmtTier(eng.remaining.level_10, limits.level_10) + " L10";
-      }).filter(Boolean).join("; ");
+      }).filter(Boolean).concat(
+        // The "eval" kind's own budget (FRIEND_EVAL_KEY in game.py) sits
+        // beside the per-engine entries in the same used/remaining shape,
+        // but has a single tier rather than L20/L10.
+        (() => {
+          const ev = f[FRIEND_EVAL_KEY];
+          const evLimits = state.phone_a_friend.limits[FRIEND_EVAL_KEY];
+          if (!ev || !evLimits) return [];
+          return ["Stockfish eval " + fmtTier(ev.remaining.eval, evLimits.eval)];
+        })()
+      ).join("; ");
       typeLabel = type + (perEngine ? " (friend: " + perEngine + ")" : "");
     }
   }
@@ -1414,6 +1430,33 @@ async function initStartPanel() {
     friendInputs[eng.id] = { l20, l10 };
   });
 
+  // The "eval" phone-a-friend kind (see FRIEND_KINDS in game.py) is not
+  // one of the per-engine move-hint tiers above: it asks Stockfish who
+  // is winning rather than what to play, and draws on its own budget, so
+  // it gets its own row rather than a third box on the Stockfish one.
+  const evalLimitInput = document.createElement("input");
+  evalLimitInput.type = "number";
+  evalLimitInput.min = "-1"; evalLimitInput.max = "50"; evalLimitInput.step = "1";
+  evalLimitInput.title = "Full-strength Stockfish position evaluations allowed " +
+    "per api-user side (-1 = unlimited)";
+  evalLimitInput.value = "1";
+  const evalTag = document.createElement("span");
+  evalTag.className = "friend-inputs-tag";
+  evalTag.textContent = "\\u00d7 eval";
+  const evalPair = document.createElement("span");
+  evalPair.className = "friend-inputs-pair";
+  evalPair.append(evalLimitInput, evalTag);
+  const evalPairsRow = document.createElement("div");
+  evalPairsRow.className = "friend-engine-pairs";
+  evalPairsRow.append(evalPair);
+  const evalNameTag = document.createElement("span");
+  evalNameTag.className = "friend-inputs-tag friend-engine-name";
+  evalNameTag.textContent = "Stockfish eval";
+  const evalRow = document.createElement("div");
+  evalRow.className = "friend-engine-row";
+  evalRow.append(evalNameTag, evalPairsRow);
+  friendEnginesEl.append(evalRow);
+
   // Each side's engine and level controls are independent: an
   // engine-vs-engine game can (and often should, to be an interesting
   // game to watch) pit two different engines and/or difficulties
@@ -1471,6 +1514,9 @@ async function initStartPanel() {
         if (Object.keys(tiers).length) friendLimits[engId] = tiers;
       });
       if (Object.keys(friendLimits).length) body.friend_limits = friendLimits;
+      if (evalLimitInput.value !== "") {
+        body.friend_eval_limit = parseInt(evalLimitInput.value, 10);
+      }
     }
     try {
       const res = await fetch("/game/start", {
@@ -1638,6 +1684,7 @@ def create_viewer_app(game):
         engine = body.get("engine")
         white_engine = body.get("white_engine")
         black_engine = body.get("black_engine")
+        friend_eval_limit = body.get("friend_eval_limit")
         friend_level10_limit = body.get("friend_level10_limit")
         friend_level20_limit = body.get("friend_level20_limit")
         friend_limits = body.get("friend_limits")
@@ -1656,6 +1703,7 @@ def create_viewer_app(game):
                 white, black, level=level, white_level=white_level, black_level=black_level,
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
+                friend_eval_limit=friend_eval_limit,
                 engine_friend_limits=engine_friend_limits, include_eval=True,
             )
         except GameError as e:
