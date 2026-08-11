@@ -45,7 +45,10 @@ python3 computer-chess/scripts/chess.py move --side white e2e4 \
 `chess.py --help` lists every subcommand. Between them they cover the
 endpoints below: starting and joining games, reading the position,
 moving, hints, waiting, renaming, changing difficulty, resigning,
-aborting, and the transcript.
+aborting, and the transcript. `turn --side COLOR` prints the five
+remaining hint budgets in plain language: L10 GNU Chess, L20 GNU Chess,
+L10 Stockfish, L20 Stockfish, and Stockfish Eval. `-1` is printed as
+`unlimited`.
 
 The required `--side` is not decoration. Because no endpoint uses
 authentication, a move sent during the wrong side's turn is accepted
@@ -381,8 +384,10 @@ for the `"eval"` kind of query (see
 `POST /api/game/phone-a-friend` below). Each engine value is the count
 *remaining* at each tier, joined by a slash in tier order
 (`"level_10/level_20"`), where `-1` means unlimited. `stockfish_eval`
-has a single tier, so it is one bare number. So `"2/1"` is two level-10 hints and one level-20
-hint still available, and `"0/0"` means that engine is exhausted. See
+has a single tier, so it is one bare number. For example, `"2/1"` is
+two level-10 hints and one level-20 hint still available, and `"0/0"`
+means that engine is exhausted. The bundled `chess.py` expands these
+compact values into five labeled budgets for agents. See
 `POST /api/game/phone-a-friend` below. Only an `"api-user"`/
 `"api-trainee"` side can use it, but the field is always present,
 whatever the usage and whoever is playing, so anyone reading the state

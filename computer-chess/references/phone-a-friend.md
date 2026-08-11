@@ -80,7 +80,7 @@ all.
 below are one example, not a starting point to expect:
 
 ```
-budget: gnuchess 3/1  stockfish 0/2  stockfish_eval 4
+budget remaining: L10 GNU Chess 3; L20 GNU Chess 1; L10 Stockfish 0; L20 Stockfish 2; Stockfish Eval 4
 ```
 
 Each engine shows `level_10/level_20` remaining. `stockfish_eval` has
