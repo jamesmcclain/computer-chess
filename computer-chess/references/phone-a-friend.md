@@ -61,27 +61,33 @@ for a move hint if that is what you need.
 
 ## Budgets
 
-Each budget is per side, per game. Defaults:
+Each budget is per side, per game.
 
-| Budget | Default | Set at game start with |
-|---|---|---|
-| Level 10, per engine | 2 | `--friend-l10` |
-| Level 20, per engine | 1 | `--friend-l20` |
-| `eval` | 1 | `--friend-eval` |
+| Budget | Set at game start with |
+|---|---|
+| Level 10, per engine | `--friend-l10` |
+| Level 20, per engine | `--friend-l20` |
+| `eval` | `--friend-eval` |
 
 GNU Chess and Stockfish hold independent quotas. Asking GNU Chess for a
 hint does not spend your Stockfish budget.
 
-`chess.py turn --side white` prints what you have left:
+**Read your budget. Do not assume it.** Whoever starts the game sets
+these numbers. A game can begin with any of them, including none at
+all.
+
+`chess.py turn --side white` prints what you have left. The numbers
+below are one example, not a starting point to expect:
 
 ```
-budget: gnuchess 2/1  stockfish 2/0  stockfish_eval 1
+budget: gnuchess 3/1  stockfish 0/2  stockfish_eval 4
 ```
 
 Each engine shows `level_10/level_20` remaining. `stockfish_eval` has
 one tier, so it is a single number. `-1` means unlimited. `0` means
 that one is spent — try the other engine, the other kind, or decide on
-your own.
+your own. In the example above, GNU Chess still has hints at both
+levels, and Stockfish has level-20 hints only.
 
 A failed query costs you nothing.
 

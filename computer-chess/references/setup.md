@@ -71,15 +71,19 @@ A name never carries over to the next game. Set it again each time.
 These set the phone-a-friend budget for the whole game, per side. See
 `phone-a-friend.md` for what each one buys.
 
-| Flag | Default | Buys |
-|---|---|---|
-| `--friend-l10` | 2 | Level-10 move hints, for every engine |
-| `--friend-l20` | 1 | Level-20 move hints, for every engine |
-| `--friend-eval` | 1 | Full-strength Stockfish position evaluations |
+| Flag | Buys |
+|---|---|
+| `--friend-l10` | Level-10 move hints, for every engine |
+| `--friend-l20` | Level-20 move hints, for every engine |
+| `--friend-eval` | Full-strength Stockfish position evaluations |
 
-Any of them accepts `-1` for unlimited, or `0` to turn that kind off.
-Raise them if the user wants more help. None of them carries over to
-the next game.
+Each flag takes a count. It also accepts `-1` for unlimited, or `0` to
+turn that kind off. Raise a budget if the user wants more help. None of
+them carries over to the next game.
+
+Omit a flag to accept the server's own starting value for it. Read the
+budget you actually have from `chess.py turn`, as `phone-a-friend.md`
+describes. Never assume a number.
 
 ## Two engines playing each other
 
