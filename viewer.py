@@ -1612,12 +1612,45 @@ def create_viewer_app(game):
         with game state."""
         return jsonify(boards=load_board_catalogue(), pieces=load_piece_catalogue())
 
+    def _looks_like_a_browser():
+        """True when the request's User-Agent looks like a web browser.
+
+        Every browser sends a User-Agent that starts with "Mozilla/",
+        for historical reasons; curl, wget and the Python HTTP clients
+        do not. That is the whole test.
+
+        Any client can send any User-Agent it likes, so this separates
+        the board viewer's own page from a script that did not think to
+        disguise itself — nothing stronger. It gates only the audit
+        record in _note_eval_read(), never the response, so a wrong
+        answer here costs nobody their eval bar."""
+        return (request.headers.get("User-Agent") or "").startswith("Mozilla/")
+
+    def _note_eval_read():
+        """Record a read of an eval-bearing route by a non-browser
+        client. These routes carry the eval bar's current reading, which
+        an API player is otherwise expected to spend phone-a-friend
+        budget on. See ChessGame.record_eval_read()."""
+        if _looks_like_a_browser():
+            return
+        agent = request.headers.get("User-Agent") or "(none)"
+        address = request.remote_addr or "?"
+        game.record_eval_read(agent, address)
+        app.logger.warning(
+            "eval-bearing route %s read by non-browser client %s (User-Agent: %s)",
+            request.path, address, agent,
+        )
+
     @app.get("/state")
     def state():
         """One-off state fetch. Kept for the no-SSE fallback and for
-        anyone who'd rather poll than stream."""
+        anyone who'd rather poll than stream.
+
+        This response carries the eval bar reading, so a read by anything
+        other than the viewer page is noted — see _note_eval_read()."""
         if not game.is_started():
             return jsonify({"started": False})
+        _note_eval_read()
         return jsonify(game.state(include_eval=True))
 
     @app.get("/events")
@@ -1625,6 +1658,12 @@ def create_viewer_app(game):
         """Server-Sent Events stream: pushes the current state once on
         connect, then again every time the game actually changes (move,
         new game, resignation, ...) — no fixed-interval polling."""
+
+        # Same eval bar reading as /state, pushed instead of polled, so
+        # the same audit note applies. Recorded once per connection, at
+        # connect time, rather than once per pushed event: a browser
+        # holds this stream open for the whole game.
+        _note_eval_read()
 
         def generate():
             version = -1  # guarantees the first wait_for_change() returns immediately

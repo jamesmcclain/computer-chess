@@ -695,6 +695,17 @@ third of a pawn, `-1.20` = black better by a bit over a pawn), or
 3. Bc4 Nf6 4. Qxf7# {Chat: gg / Eval: #3} 1-0
 ```
 
+One further tag appears only when there is something to report:
+
+```
+[EvalBarReads "3 (after ply 1, 2, 2)"]
+```
+
+It counts reads of the board viewer's eval bar, during this game, by a
+client that did not look like a browser — see "Board viewer (port
+5004)" below for what it means and what it does not prove. The tag is
+absent from a game with no such reads.
+
 `include` (optional, `all` or `moves`, default `all`) controls those
 per-move comments. The default is the complete annotated transcript
 shown above — the reasoning is withheld for the entire game and folded
@@ -726,6 +737,43 @@ squares that changed, so there is no flash or reload.
 
 `GET /state` is also available for a single fetch. The page uses
 `GET /state` as a fallback when SSE is not available.
+
+**These two routes carry the eval bar reading.** Both call the game
+state with its `eval` field included, which no endpoint on port 5003
+ever returns:
+
+```json
+"eval": {"score_cp": 31, "mate": null, "pov": "white", "quality": "deep", "pending": false, "error": null}
+```
+
+That matters because an API player is expected to pay for an evaluation
+with `POST /api/game/phone-a-friend` at `{"kind": "eval"}`, which is
+budgeted per side per game. Reading the viewer gives the same class of
+information for free.
+
+Nothing prevents that read. The viewer has no authentication, so
+anything a browser can fetch a script can fetch too, and serving the
+eval bar to the page while withholding it from `curl` is not possible
+without adding authentication that this server deliberately does not
+have.
+
+So the read is recorded instead. When either route is fetched during a
+game in progress by a client whose `User-Agent` does not start with
+`Mozilla/`, the server logs a warning naming the path, the address, and
+the User-Agent, and adds an entry to that game's record. The finished
+game's transcript then carries a supplementary tag:
+
+```
+[EvalBarReads "3 (after ply 1, 2, 2)"]
+```
+
+The tag is absent when there is nothing to report.
+
+**This is an audit trail, not a control.** Any client can send any
+`User-Agent` it likes, so the check catches a caller that did not think
+to disguise itself and nothing stronger. A clean record is not proof
+that nobody looked. The response is never gated on the outcome, so a
+wrong guess about the client costs nobody their eval bar.
 
 **Downloading a transcript.** Once the game ends, and before a new
 one (if any) is started, a "Download transcript (PGN)" button appears

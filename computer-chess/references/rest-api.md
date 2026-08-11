@@ -36,8 +36,6 @@ curl -X POST http://10.0.2.2:5003/api/game/phone-a-friend \
   -H 'Content-Type: application/json' -d '{"kind": "eval"}'
 ```
 
-`GET /api` returns the full endpoint list at any time.
-
 `GET /api/game/analysis` reports what the position holds: the material
 that can be taken on both sides, the absolute pins, and your legal
 captures and checks. Every fact in it follows from the FEN. Deriving

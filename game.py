@@ -485,6 +485,9 @@ class ChessGame:
         # to sit in that grid. Reset per game exactly like the others.
         self.friend_eval_limit = DEFAULT_FRIEND_EVAL_LIMIT
         self.friend_eval_used = {"white": 0, "black": 0}
+        # Reads of the board viewer's eval-bearing routes by a client
+        # that does not look like a browser — see record_eval_read().
+        self.eval_reads = []
 
     # ---- engine lifecycle -------------------------------------------------
 
@@ -681,6 +684,7 @@ class ChessGame:
             }
             self.friend_eval_limit = friend_eval_limit
             self.friend_eval_used = {"white": 0, "black": 0}
+            self.eval_reads = []
 
             both_engines = white == "engine" and black == "engine"
             engine_move = None
@@ -1792,6 +1796,42 @@ class ChessGame:
             self._bump_version_locked()
             return self.state(include_eval=include_eval, **(state_opts or {}))
 
+    def record_eval_read(self, agent, address):
+        """Note that a client read one of the board viewer's eval-bearing
+        routes while a game was in progress.
+
+        WHY THIS EXISTS. The viewer serves the eval bar to whoever asks:
+        it is an HTTP endpoint with no authentication, so anything a
+        browser can fetch, a script can fetch too. An API player is
+        supposed to pay for an evaluation with the 'eval' kind of
+        phone-a-friend query, which is budgeted (see FRIEND_EVAL_KEY).
+        Reading the viewer instead gets the same information for free.
+
+        That cannot be *prevented* without adding authentication, which
+        this server deliberately does not have. So it is recorded
+        instead. A read that happens is visible afterwards, in the
+        transcript, where anyone reviewing the game will see it.
+
+        LIMITS. `agent` is the client's own User-Agent header, which any
+        client can set to anything. This catches a caller that did not
+        think to disguise itself. It is an audit trail, not a control,
+        and a determined client defeats it by sending a browser's
+        User-Agent string. Do not read a clean record as proof that
+        nobody looked.
+
+        Reads are only recorded while a game is in progress: before or
+        after one, the eval bar gives away nothing worth having.
+        """
+        with self._lock:
+            if not self.started or self._status() != "in_progress":
+                return
+            self.eval_reads.append({
+                "ply": len(self.move_log),
+                "at": time.time(),
+                "agent": (agent or "")[:200],
+                "address": address or "",
+            })
+
     def transcript(self, include_annotations=True):
         """Build a PGN (Portable Game Notation) transcript of the game
         that just ended — the standard plain-text chess-game format;
@@ -1883,6 +1923,14 @@ class ChessGame:
             tags.append(("BlackEngine", engine_names.get("black", DEFAULT_ENGINE)))
             tags.append(("BlackEngineLevel", str(engine_levels.get("black", DEFAULT_LEVEL))))
         tags.append(("Termination", TERMINATION_LABELS.get(status, status)))
+        # A non-standard supplementary tag, present only when there is
+        # something to report. The eval bar is free to read and budgeted
+        # to ask for, so a game where somebody read it is worth flagging
+        # to whoever reviews this transcript. See record_eval_read() for
+        # what this does and does not prove.
+        if self.eval_reads:
+            plies = ", ".join(str(entry["ply"]) for entry in self.eval_reads)
+            tags.append(("EvalBarReads", f"{len(self.eval_reads)} (after ply {plies})"))
 
         header = "\n".join(f'[{key} "{_pgn_escape_tag(value)}"]' for key, value in tags)
 
