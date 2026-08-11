@@ -102,14 +102,32 @@ def board_lines(board_ascii):
 
 
 def friend_line(state, side):
-    """One line of remaining phone-a-friend budget for `side`. Values
-    are the counts left, `-1` for unlimited; see the skill's
-    references/phone-a-friend.md."""
+    """Print every remaining hint budget in plain language.
+
+    The compact API form stores engine tiers as ``level_10/level_20``.
+    Expand it here so an agent cannot confuse GNU Chess with Stockfish or
+    level 10 with level 20. ``-1`` means unlimited.
+    """
     budget = (state.get("phone_a_friend") or {}).get(side)
     if not budget:
         return None
-    parts = [f"{name} {value}" for name, value in sorted(budget.items())]
-    return "budget: " + "  ".join(parts)
+
+    def value(engine, tier):
+        raw = budget.get(engine, "0/0")
+        if tier == "eval":
+            return raw
+        values = str(raw).split("/", 1)
+        return values[0 if tier == "10" else 1] if len(values) == 2 else "0"
+
+    def pretty(raw):
+        return "unlimited" if str(raw) == "-1" else str(raw)
+
+    return ("budget remaining: "
+            f"L10 GNU Chess {pretty(value('gnuchess', '10'))}; "
+            f"L20 GNU Chess {pretty(value('gnuchess', '20'))}; "
+            f"L10 Stockfish {pretty(value('stockfish', '10'))}; "
+            f"L20 Stockfish {pretty(value('stockfish', '20'))}; "
+            f"Stockfish Eval {pretty(value('stockfish_eval', 'eval'))}")
 
 
 def tactics_lines(report):

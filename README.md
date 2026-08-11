@@ -45,7 +45,10 @@ python3 computer-chess/scripts/chess.py move --side white e2e4 \
 `chess.py --help` lists every subcommand. Between them they cover the
 endpoints below: starting and joining games, reading the position,
 moving, hints, waiting, renaming, changing difficulty, resigning,
-aborting, and the transcript.
+aborting, and the transcript. `turn --side COLOR` prints the five
+remaining hint budgets in plain language: L10 GNU Chess, L20 GNU Chess,
+L10 Stockfish, L20 Stockfish, and Stockfish Eval. `-1` is printed as
+`unlimited`.
 
 The required `--side` is not decoration. Because no endpoint uses
 authentication, a move sent during the wrong side's turn is accepted
@@ -381,8 +384,10 @@ for the `"eval"` kind of query (see
 `POST /api/game/phone-a-friend` below). Each engine value is the count
 *remaining* at each tier, joined by a slash in tier order
 (`"level_10/level_20"`), where `-1` means unlimited. `stockfish_eval`
-has a single tier, so it is one bare number. So `"2/1"` is two level-10 hints and one level-20
-hint still available, and `"0/0"` means that engine is exhausted. See
+has a single tier, so it is one bare number. For example, `"2/1"` is
+two level-10 hints and one level-20 hint still available, and `"0/0"`
+means that engine is exhausted. The bundled `chess.py` expands these
+compact values into five labeled budgets for agents. See
 `POST /api/game/phone-a-friend` below. Only an `"api-user"`/
 `"api-trainee"` side can use it, but the field is always present,
 whatever the usage and whoever is playing, so anyone reading the state
@@ -787,6 +792,8 @@ after a game finishes, the page shows a form to start one. A person
 picks a type for White and a type for Black:
 
 - `api-user` — moves come from the REST API (an agent, or curl).
+- `api-trainee` — an API user subject to the phone-a-friend and
+  reasoning requirements described under `POST /api/game/move`.
 - `engine` — GNU Chess or Stockfish plays this side (see below).
 - `web-user` — the person at this page plays this side, by clicking
   the board (see below).
@@ -794,19 +801,14 @@ picks a type for White and a type for Black:
 Each side that is `engine` gets its own engine dropdown (GNU Chess or
 Stockfish) and its own difficulty dropdown, so an engine-vs-engine
 game can pit two different engines and/or strengths against each
-other. Whenever either side is set to `api-user`, the form also shows
-two "phone a friend" inputs — the level-20 and level-10 query limits
-for this game, applied to both engines at once (see
-`POST /api/game/phone-a-friend` above; per-engine budgets can only be
-set independently through the REST API), defaulting to `1` and `2`.
-This form supports every combination the API supports:
-
-- Two API users.
-- An API user against an engine.
-- A web user against an engine.
-- A web user against an API user.
-- Two engines, the same one or different ones. This game plays itself
-  out, one paced move at a time, with no further input needed.
+other. Whenever either side is `api-user` or `api-trainee`, the form
+also shows phone-a-friend inputs: independent L10 and L20 limits for
+GNU Chess and Stockfish, plus the separate Stockfish Eval limit. See
+`POST /api/game/phone-a-friend` above. The form supports every
+combination of the four player types, including API users or trainees
+against an engine or web user, and two engines. An engine-vs-engine
+game plays itself out, one paced move at a time, with no further input
+needed.
 
 **Playing as a web user.** When it is a `web-user` side's turn, the
 page lets that person click a piece. Then the person clicks a
@@ -815,8 +817,9 @@ shows a small picker for the piece to promote to.
 
 **Names and chat.** A players bar above the board shows each side's
 display name, type, and — for an `"engine"` side — which engine it is
-and its difficulty level, or — for an `"api-user"` side — its
-remaining "phone a friend" budget at each level, per engine. Set a
+and its difficulty level, or — for an `"api-user"` or `"api-trainee"`
+side — its five remaining phone-a-friend budgets: L10 GNU Chess, L20
+GNU Chess, L10 Stockfish, L20 Stockfish, and Stockfish Eval. Set a
 name with `POST /api/game/name`. The side to move is highlighted. Any move that
 carried `chat` (see `POST /api/game/move`) shows up in a chat panel
 below the board, next to that move — there is no standalone chat

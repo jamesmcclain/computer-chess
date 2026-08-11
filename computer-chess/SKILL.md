@@ -101,7 +101,7 @@ This one command prints everything you need:
 - the board and the FEN
 - a `tactics:` summary — loose material, pins, and the checks and
   captures available to you
-- your hint budget, and the legal moves
+- your remaining hint budget in plain language (L10/L20 GNU Chess, L10/L20 Stockfish, and Stockfish Eval), and the legal moves
 
 Read the `tactics:` lines before you choose. They name the pieces that
 can be taken on both sides. You do not have to find them by eye.

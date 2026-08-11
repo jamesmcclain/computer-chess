@@ -18,9 +18,9 @@ move".
 Before each move you must:
 
 1. **Call `phone-a-friend` since your last move.** Any kind, any level,
-   any engine satisfies this. The only exception is when your budget is
-   zero everywhere — every level, every engine, *and* the
-   `stockfish_eval` budget.
+   any engine satisfies this. The only exception is when all five
+   displayed budgets are zero: L10 GNU Chess, L20 GNU Chess, L10
+   Stockfish, L20 Stockfish, and Stockfish Eval.
 2. **Send both `--tactical` and `--strategic`.** `scripts/chess.py`
    requires both on every move already, so following SKILL.md covers
    this.
@@ -60,8 +60,9 @@ python3 scripts/chess.py phone-a-friend --side white eval
 Make it a fixed habit for the whole game, not a decision you take each
 turn.
 
-`chess.py turn --side white` prints your remaining budget. Read it every
-turn. While any number there is not `0`, you owe a call.
+`chess.py turn --side white` prints the five remaining budgets in plain
+language. Read them every turn. While any number there is not `0`, you
+owe a call.
 
 If you are unsure whether you called phone-a-friend for this move,
 **call it again.** An extra call costs one unit of budget. A skipped

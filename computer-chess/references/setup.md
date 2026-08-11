@@ -77,6 +77,10 @@ These set the phone-a-friend budget for the whole game, per side. See
 | `--friend-l20` | Level-20 move hints, for every engine |
 | `--friend-eval` | Full-strength Stockfish position evaluations |
 
+The first two flags apply independently to GNU Chess and Stockfish. So
+`turn` reports five separate remaining budgets: L10 GNU Chess, L20 GNU
+Chess, L10 Stockfish, L20 Stockfish, and Stockfish Eval.
+
 Each flag takes a count. It also accepts `-1` for unlimited, or `0` to
 turn that kind off. Raise a budget if the user wants more help. None of
 them carries over to the next game.
