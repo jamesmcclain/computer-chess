@@ -8,9 +8,14 @@ from flask import Flask, Response, jsonify, request
 
 from game import (
     DEFAULT_EVAL_QUALITY,
+    DEFAULT_FRIEND_EVAL_LIMIT,
+    DEFAULT_FRIEND_KIND,
     DEFAULT_FRIEND_LIMITS,
     ENGINE_NAMES,
     EVAL_QUALITIES,
+    FRIEND_EVAL_KEY,
+    FRIEND_EVAL_TIME_LIMIT,
+    FRIEND_KINDS,
     FRIEND_LEVELS,
     FRIEND_LIMIT_MAX,
     FRIEND_LIMIT_MIN,
@@ -48,6 +53,11 @@ API_DOC = {
                      "friend_level20_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
                                               f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
                                               f"default {DEFAULT_FRIEND_LIMITS[FRIEND_LEVELS[1]]}, every engine",
+                     "friend_eval_limit": f"optional, {FRIEND_LIMIT_MIN}-{FRIEND_LIMIT_MAX} or "
+                                           f"{FRIEND_LIMIT_UNLIMITED} for unlimited, "
+                                           f"default {DEFAULT_FRIEND_EVAL_LIMIT}; budget for the "
+                                           "'eval' kind of phone-a-friend query, which is separate "
+                                           "from the per-engine move-hint budgets above",
                      "friend_limits": "optional, object of the form "
                                        "{engine_name: {tier: limit}} — e.g. "
                                        f'{{"stockfish": {{"{FRIEND_LEVELS[0]}": 5}}}}; '
@@ -115,16 +125,62 @@ API_DOC = {
                             "opening move is played immediately and "
                             "returned as 'engine_move'.",
         },
-        "GET /api/game": "Current game state (board, whose turn it is, "
-                          "status, move log — including any chat attached "
-                          "to a move — engine levels and engine choices, "
-                          "player names, ...). This is also how to check "
-                          "whose turn it is — see the 'turn' field. See "
-                          "GET /api/eval-qualities and "
+        "GET /api/game": "Current game state: position ('fen' and "
+                          "'board_ascii'), whose turn it is ('turn'), "
+                          "status, the single most recent move "
+                          "('last_move', including any chat attached to "
+                          "it), engine levels and engine choices, player "
+                          "names, and phone-a-friend budget. Responses "
+                          "omit the 8x8 'board' grid and the full "
+                          "'move_log' — 'fen' and 'last_move' carry the "
+                          "same information far more compactly. Add "
+                          "?verbose=1 here or on any endpoint below to get "
+                          "the grid and the expanded phone-a-friend "
+                          "breakdown back. See GET /api/eval-qualities and "
                           "POST /api/game/eval-quality for the eval bar's "
                           "own settings.",
+        "GET /api/game/analysis": "Derived tactical facts about the "
+                                   "current position, for the side to "
+                                   "move (or ?color=white|black). Reports "
+                                   "'hanging' material on both sides with "
+                                   "its attackers and defenders, absolute "
+                                   "'pins', the 'checkers' when in check, "
+                                   "and your legal 'captures' and "
+                                   "'checks'. All of it follows from the "
+                                   "FEN, but deriving it by eye is where "
+                                   "blunders come from. NOTE: 'hanging' "
+                                   "counts direct attackers and defenders "
+                                   "only. It is not a static exchange "
+                                   "evaluation, and it does not see "
+                                   "x-rays, batteries, or pinned "
+                                   "defenders. Treat it as squares worth "
+                                   "a second look, not a verdict.",
         "GET /api/game/legal-moves": "Legal moves for the side to move. "
-                                      "Optional query param: from=e2",
+                                      "Optional query params: from=e2 to "
+                                      "restrict to moves leaving one "
+                                      "square; format=compact (the "
+                                      "default) returns 'moves' as a "
+                                      "single space-separated string of "
+                                      "UCI moves, format=full returns a "
+                                      "list of objects with uci/san/from/"
+                                      "to/promotion.",
+        "GET /api/game/wait": "Block until it is your color's turn, the "
+                               "game ends, or the timeout expires. Query "
+                               "params: color=white|black (required), "
+                               "timeout=SECONDS (optional). Returns "
+                               "{'changed': true, 'state': {...}} when "
+                               "there is something to act on, or the "
+                               "minimal {'changed': false, 'turn': ..., "
+                               "'game_over': ...} when the timeout expired "
+                               "with the position unchanged — call again "
+                               "in that case.",
+        "GET /api/game/transcript": "PGN transcript of the finished game; "
+                                     "400 while a game is in progress. "
+                                     "Optional query param: include=all "
+                                     "(the default) folds every move's "
+                                     "chat, both reasoning fields, and the "
+                                     "eval read into PGN comments; "
+                                     "include=moves returns bare movetext.",
         "POST /api/game/move": {
             "body": {"move": "e2e4 (UCI) or e4 (SAN)",
                      "chat": "optional, up to 240 chars",
@@ -182,15 +238,38 @@ API_DOC = {
                             "GET /api/game in a loop.",
         },
         "POST /api/game/phone-a-friend": {
-            "body": {"level": f"one of: {', '.join(str(l) for l in FRIEND_LEVELS)}",
+            "body": {"kind": f"optional, one of: {', '.join(FRIEND_KINDS)}, "
+                              f"defaults to {DEFAULT_FRIEND_KIND}",
+                     "level": f"one of: {', '.join(str(l) for l in FRIEND_LEVELS)} "
+                               "— required for kind 'move', not used by kind 'eval'",
                      "engine": f"optional, one of: {', '.join(ENGINE_NAMES)}, "
-                               "defaults to gnuchess"},
+                               "defaults to gnuchess — applies to kind 'move' "
+                               "only; kind 'eval' is always Stockfish"},
             "description": "For the 'api-user'/'api-trainee' side to move "
-                            "only: ask an "
+                            "only: ask for help with the current position "
+                            "without submitting a move. Two kinds. "
+                            "kind 'move' (the default) asks an "
                             "engine what it would play in the current "
-                            "position, without submitting that move. Does "
-                            "not change the board, does not end your "
-                            "turn, and is not a substitute for "
+                            "position, without submitting that move. "
+                            "kind 'eval' asks a different question — not "
+                            "what to play but who is winning and by how "
+                            "much — answered by Stockfish at full "
+                            f"strength ({FRIEND_EVAL_TIME_LIMIT:g}s of search, "
+                            "never weakened by either side's difficulty "
+                            "setting, and unaffected by whether the board "
+                            "viewer's eval bar is switched on). It returns "
+                            "'score_cp' (centipawns) and 'mate', both from "
+                            "*white's* point of view whichever side asked, "
+                            "plus 'eval' (the same reading preformatted, "
+                            "e.g. '+0.34' or '#3') and 'favors' ('white', "
+                            "'black' or 'equal') so the sign cannot be "
+                            "misread. Its budget is tracked separately "
+                            f"from the move-hint budgets, under '{FRIEND_EVAL_KEY}' "
+                            "in 'phone_a_friend' — see 'friend_eval_limit' "
+                            "on POST /api/game. Either kind satisfies an "
+                            "'api-trainee' side's per-move phone-a-friend "
+                            "requirement. Neither kind changes the board, "
+                            "ends your turn, or is a substitute for "
                             "POST /api/game/move — you still submit your "
                             "own move afterward, whether or not you take "
                             "the suggestion. Each of the two levels "
@@ -343,6 +422,50 @@ API_DOC = {
 }
 
 
+# How much of the game state each kind of API response carries. Every
+# byte here is paid for twice — once on the wire, and again in the
+# context window of the agent reading it — so the default is the least
+# that still answers the question, and `?verbose=1` restores the rest.
+#
+# The board grid is dropped everywhere: it is the single largest field
+# in the state, and it re-encodes a position already carried by 'fen'
+# and 'board_ascii' in a fraction of the space. It exists for the board
+# viewer's per-square rendering, which does not go through this app.
+#
+# LEAN_STATE also drops the fields that cannot change during a game
+# ('players', 'player_names', 'engine_levels', 'engine_names',
+# 'started'); repeating them on every move is pure noise. CONTEXT_STATE
+# keeps them, and is used by the two calls whose job is to tell a caller
+# where things stand: POST /api/game and GET /api/game.
+#
+# 'phone_a_friend' is never dropped by either — an 'api-trainee' side
+# must be able to read its own remaining budget before every move — but
+# both send the compact form; see _friend_summary_compact_locked().
+LEAN_STATE = {
+    "include_log": False,
+    "include_board_grid": False,
+    "include_static": False,
+    "friend_detail": "compact",
+}
+CONTEXT_STATE = {**LEAN_STATE, "include_static": True}
+VERBOSE_STATE = {
+    "include_log": False,
+    "include_board_grid": True,
+    "include_static": True,
+    "friend_detail": "full",
+}
+
+
+def _state_opts(base):
+    """Pick the state() options for this request: `base` normally, or the
+    full pre-trimming payload when the caller passes ?verbose=1. The
+    escape hatch is there so a caller that genuinely wants the board grid
+    or the full phone-a-friend breakdown can still get them without a
+    second round trip."""
+    verbose = (request.args.get("verbose") or "").strip().lower()
+    return VERBOSE_STATE if verbose in ("1", "true", "yes") else base
+
+
 def create_api_app(game):
     app = Flask(__name__)
 
@@ -377,6 +500,7 @@ def create_api_app(game):
         black_name = body.get("black_name")
         friend_level10_limit = body.get("friend_level10_limit")
         friend_level20_limit = body.get("friend_level20_limit")
+        friend_eval_limit = body.get("friend_eval_limit")
         friend_limits = body.get("friend_limits")
         try:
             engine_friend_limits = None
@@ -394,7 +518,9 @@ def create_api_app(game):
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 white_name=white_name, black_name=black_name,
                 friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
+                friend_eval_limit=friend_eval_limit,
                 engine_friend_limits=engine_friend_limits,
+                state_opts=_state_opts(CONTEXT_STATE),
             )
         except GameError as e:
             return error(str(e))
@@ -404,15 +530,34 @@ def create_api_app(game):
     def get_state():
         if not game.is_started():
             return error("no game in progress; POST /api/game to start one", 404)
-        return jsonify(game.state(include_log=False))
+        return jsonify(game.state(**_state_opts(CONTEXT_STATE)))
+
+    @app.get("/api/game/analysis")
+    def get_analysis():
+        color = request.args.get("color")
+        try:
+            return jsonify(game.analysis(color))
+        except GameError as e:
+            return error(str(e), 404 if "no game" in str(e) else 400)
 
     @app.get("/api/game/legal-moves")
     def get_legal_moves():
         from_square = request.args.get("from")
+        fmt = (request.args.get("format") or "compact").strip().lower()
+        if fmt not in ("compact", "full"):
+            return error("'format' must be 'compact' or 'full'")
         try:
             moves = game.legal_moves(from_square)
         except GameError as e:
             return error(str(e), 404 if "no game" in str(e) else 400)
+        if fmt == "compact":
+            # 'from', 'to' and 'promotion' are all substrings of 'uci', so
+            # the full form spends roughly ten bytes restating each move
+            # for every one it takes to state it. The compact form is a
+            # single space-separated string of UCI moves — around a
+            # thirteenth of the size, and directly usable as the 'move'
+            # field of POST /api/game/move.
+            return jsonify(moves=" ".join(m["uci"] for m in moves), count=len(moves))
         return jsonify(moves=moves, count=len(moves))
 
     @app.post("/api/game/move")
@@ -432,44 +577,61 @@ def create_api_app(game):
             )
         except GameError as e:
             return error(str(e))
+        opts = _state_opts(LEAN_STATE)
         if player_move.get("forfeited"):
             return jsonify(forfeited=True, by=player_move["by"],
-                            reasons=player_move["reasons"], state=game.state(include_log=False))
-        return jsonify(move=player_move, engine_move=engine_move, state=game.state(include_log=False))
+                            reasons=player_move["reasons"], state=game.state(**opts))
+        return jsonify(move=player_move, engine_move=engine_move, state=game.state(**opts))
 
     @app.post("/api/game/phone-a-friend")
     def post_phone_a_friend():
         body = request.get_json(silent=True) or {}
+        kind = body.get("kind") or DEFAULT_FRIEND_KIND
         level = body.get("level")
         engine_name = body.get("engine")
-        if level is None:
-            return error(f"'level' is required (one of: {', '.join(str(l) for l in FRIEND_LEVELS)})")
+        if kind not in FRIEND_KINDS:
+            return error(f"'kind' must be one of: {', '.join(FRIEND_KINDS)}")
+        # 'level' picks a tier of move hint, so it is required for a
+        # 'move' query and meaningless for an 'eval' one, which has no
+        # tiers and only ever asks Stockfish at full strength.
+        if kind == "move":
+            if level is None:
+                return error(f"'level' is required (one of: {', '.join(str(l) for l in FRIEND_LEVELS)})")
+            try:
+                level = int(level)
+            except (TypeError, ValueError):
+                return error(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
         try:
-            level = int(level)
-        except (TypeError, ValueError):
-            return error(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
-        try:
-            advice = game.phone_a_friend(level, engine=engine_name)
+            advice = game.phone_a_friend(level, engine=engine_name, kind=kind)
         except GameError as e:
             return error(str(e))
-        return jsonify(advice=advice, state=game.state(include_log=False))
+        return jsonify(advice=advice, state=game.state(**_state_opts(LEAN_STATE)))
 
     @app.get("/api/game/wait")
     def get_wait():
         color = request.args.get("color")
         timeout = request.args.get("timeout", type=float)
         try:
-            state = game.wait_for_turn(color, timeout=timeout)
+            state, ready = game.wait_for_turn(
+                color, timeout=timeout, state_opts=_state_opts(LEAN_STATE)
+            )
         except GameError as e:
             return error(str(e))
-        return jsonify(state=state)
+        if not ready:
+            # The wait simply expired with the position unchanged. Sending
+            # a full state to say "nothing happened" is the most wasteful
+            # response this API can produce — a caller waiting on a slow
+            # human opponent may collect several of these in a row — so
+            # send just enough to confirm that and let them call again.
+            return jsonify(changed=False, turn=state["turn"], game_over=state["game_over"])
+        return jsonify(changed=True, state=state)
 
     @app.post("/api/game/resign")
     def post_resign():
         body = request.get_json(silent=True) or {}
         player = body.get("player")
         try:
-            state = game.resign(player)
+            state = game.resign(player, state_opts=_state_opts(LEAN_STATE))
         except GameError as e:
             return error(str(e))
         return jsonify(state=state)
@@ -477,15 +639,23 @@ def create_api_app(game):
     @app.post("/api/game/abort")
     def post_abort():
         try:
-            state = game.abort()
+            state = game.abort(state_opts=_state_opts(LEAN_STATE))
         except GameError as e:
             return error(str(e))
         return jsonify(state=state)
 
     @app.get("/api/game/transcript")
     def get_transcript():
+        include = (request.args.get("include") or "all").strip().lower()
+        if include not in ("all", "moves"):
+            return error("'include' must be 'all' or 'moves'")
         try:
-            pgn = game.transcript()
+            # Defaults to the fully annotated transcript: the reasoning is
+            # withheld for the whole game and folded in here, so quietly
+            # dropping it would defeat the point of collecting it.
+            # ?include=moves is the valve for a caller that wants only the
+            # movetext. The viewer's own download is always fully annotated.
+            pgn = game.transcript(include_annotations=(include == "all"))
         except GameError as e:
             return error(str(e))
         return Response(

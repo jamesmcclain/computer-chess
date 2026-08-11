@@ -42,6 +42,15 @@ DEFAULT_LEVEL = 10
 # unspecified, purely so existing callers that never mention an engine
 # name keep getting the same engine they always did.
 ENGINE_NAMES = ("gnuchess", "stockfish")
+
+# Standard relative piece values, used only by analysis() to decide
+# whether an attacker is cheaper than the piece it attacks. The king is
+# 0 because it is never captured or traded, so its value never enters a
+# comparison here.
+PIECE_VALUES = {
+    chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
+    chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0,
+}
 DEFAULT_ENGINE = "gnuchess"
 ENGINE_DISPLAY_NAMES = {"gnuchess": "GNU Chess", "stockfish": "Stockfish"}
 
@@ -57,6 +66,38 @@ DEFAULT_FRIEND_LIMITS = {10: 2, 20: 1}
 FRIEND_LIMIT_MIN = 0  # 0 disables that tier entirely for the game
 FRIEND_LIMIT_MAX = 50  # sane ceiling; this is a hint budget, not a real resource
 FRIEND_LIMIT_UNLIMITED = -1  # sentinel: that tier has no budget cap at all
+
+# A phone-a-friend query is one of two *kinds*. "move" is the original:
+# an engine's recommended move at one of the FRIEND_LEVELS above, from
+# whichever of ENGINE_NAMES you name. "eval" is a different question
+# entirely — not "what should I play?" but "who is winning, and by how
+# much?" — answered by Stockfish alone, at full strength.
+#
+# The two are budgeted separately, because they are not substitutes: a
+# move hint and a position assessment tell you different things, and
+# spending one should not cost you the other. An "eval" query has no
+# level and no engine choice to make, so instead of a cell in the
+# engine-by-level grid the move hints use, it gets a single budget of
+# its own, tracked per side under FRIEND_EVAL_KEY.
+FRIEND_KINDS = ("move", "eval")
+DEFAULT_FRIEND_KIND = "move"
+
+# The key an "eval" query's budget appears under in state()'s
+# 'phone_a_friend' — deliberately a name of the same shape as the
+# ENGINE_NAMES keys beside it, since to a caller it is simply a third
+# friend to call, alongside gnuchess and stockfish.
+FRIEND_EVAL_KEY = "stockfish_eval"
+DEFAULT_FRIEND_EVAL_LIMIT = 1
+
+# How long Stockfish gets to think about an "eval" query, in seconds.
+# This is the *maximum-strength* assessment the server can produce, so
+# it is set to the same budget as a level-20 move hint (the strongest
+# tier — see _search_limit_for) rather than to any of the eval bar's
+# EVAL_QUALITY_TIME_LIMITS, all of which are tuned for a bar that
+# refreshes after every single move. It runs on the eval engine, whose
+# Skill Level is never lowered from Stockfish's default, so this really
+# is the strongest answer available here.
+FRIEND_EVAL_TIME_LIMIT = 5.0
 
 # The "eval bar": a live Stockfish assessment of who is winning the
 # current position, shown as a vertical bar in the board viewer. It runs
@@ -437,6 +478,16 @@ class ChessGame:
             "white": {name: {10: 0, 20: 0} for name in ENGINE_NAMES},
             "black": {name: {10: 0, 20: 0} for name in ENGINE_NAMES},
         }
+        # The "eval" kind's budget (see FRIEND_KINDS/FRIEND_EVAL_KEY), kept
+        # apart from friend_limits/friend_used above rather than folded in
+        # as another cell of the engine-by-level grid: an eval query has
+        # neither an engine choice nor a level, so it has nowhere sensible
+        # to sit in that grid. Reset per game exactly like the others.
+        self.friend_eval_limit = DEFAULT_FRIEND_EVAL_LIMIT
+        self.friend_eval_used = {"white": 0, "black": 0}
+        # Reads of the board viewer's eval-bearing routes by a client
+        # that does not look like a browser — see record_eval_read().
+        self.eval_reads = []
 
     # ---- engine lifecycle -------------------------------------------------
 
@@ -501,7 +552,8 @@ class ChessGame:
                  engine=None, white_engine=None, black_engine=None,
                  white_name=None, black_name=None,
                  friend_level10_limit=None, friend_level20_limit=None,
-                 engine_friend_limits=None, include_eval=False):
+                 friend_eval_limit=None,
+                 engine_friend_limits=None, include_eval=False, state_opts=None):
         """Start a fresh game. `white`/`black` are each one of PLAYER_TYPES
         ('api-user', 'web-user', 'engine'); both can be 'engine'. `level`
         (optional, 0-20, Stockfish's native "Skill Level" scale — see
@@ -567,6 +619,10 @@ class ChessGame:
             name: {tier: (engine_friend_limits.get(name) or {}).get(tier) for tier in FRIEND_LEVELS}
             for name in ENGINE_NAMES
         }
+        friend_eval_limit = (
+            DEFAULT_FRIEND_EVAL_LIMIT if friend_eval_limit is None
+            else self._validate_friend_limit(friend_eval_limit, "eval", field="friend_eval_limit")
+        )
         generic_friend_limits = {10: friend_level10_limit, 20: friend_level20_limit}
         for tier, value in generic_friend_limits.items():
             if value is not None:
@@ -626,6 +682,9 @@ class ChessGame:
                 "white": {name: {10: 0, 20: 0} for name in ENGINE_NAMES},
                 "black": {name: {10: 0, 20: 0} for name in ENGINE_NAMES},
             }
+            self.friend_eval_limit = friend_eval_limit
+            self.friend_eval_used = {"white": 0, "black": 0}
+            self.eval_reads = []
 
             both_engines = white == "engine" and black == "engine"
             engine_move = None
@@ -636,7 +695,7 @@ class ChessGame:
 
             self._trigger_eval_locked(reset=True)
             self._bump_version_locked()
-            state = self.state(include_eval=include_eval)
+            state = self.state(include_eval=include_eval, **(state_opts or {}))
 
         if both_engines:
             # Neither side will ever call POST /api/game/move, so nothing
@@ -695,19 +754,23 @@ class ChessGame:
             raise GameError(f"'engine' must be one of: {', '.join(ENGINE_NAMES)}")
         return engine_name
 
-    def _validate_friend_limit(self, value, tier):
+    def _validate_friend_limit(self, value, tier, field=None):
+        """`field` names the request field this value came from, for the
+        error message; it defaults to the level-tier form, since that is
+        where all but the 'eval' budget originates."""
+        field = field or f"friend_level{tier}_limit"
         try:
             value = int(value)
         except (TypeError, ValueError):
             raise GameError(
-                f"'friend_level{tier}_limit' must be an integer between "
+                f"'{field}' must be an integer between "
                 f"{FRIEND_LIMIT_MIN} and {FRIEND_LIMIT_MAX}, or {FRIEND_LIMIT_UNLIMITED} for unlimited"
             )
         if value == FRIEND_LIMIT_UNLIMITED:
             return value
         if not (FRIEND_LIMIT_MIN <= value <= FRIEND_LIMIT_MAX):
             raise GameError(
-                f"'friend_level{tier}_limit' must be between "
+                f"'{field}' must be between "
                 f"{FRIEND_LIMIT_MIN} and {FRIEND_LIMIT_MAX}, or {FRIEND_LIMIT_UNLIMITED} for unlimited"
             )
         return value
@@ -790,10 +853,64 @@ class ChessGame:
                 }
                 for name in ENGINE_NAMES
             }
+        # The 'eval' kind (see FRIEND_KINDS) joins the per-engine entries
+        # under FRIEND_EVAL_KEY, in the same used/remaining shape, so a
+        # reader can walk every phone-a-friend budget the same way. Its
+        # single tier is keyed "eval" where an engine has "level_10" and
+        # "level_20".
+        eval_limits = {"eval": self.friend_eval_limit}
+
+        def eval_side(color):
+            return {
+                "used": {"eval": self.friend_eval_used[color]},
+                "remaining": {"eval": _friend_remaining(
+                    self.friend_eval_limit, self.friend_eval_used[color]
+                )},
+            }
+
         return {
-            "limits": {name: tiers(self.friend_limits[name]) for name in ENGINE_NAMES},
-            "white": side("white"),
-            "black": side("black"),
+            "limits": {
+                **{name: tiers(self.friend_limits[name]) for name in ENGINE_NAMES},
+                FRIEND_EVAL_KEY: eval_limits,
+            },
+            "white": {**side("white"), FRIEND_EVAL_KEY: eval_side("white")},
+            "black": {**side("black"), FRIEND_EVAL_KEY: eval_side("black")},
+        }
+
+    def _friend_summary_compact_locked(self):
+        """Caller must hold self._lock. The same information as
+        _friend_summary_locked(), squeezed into roughly a fifth of the
+        bytes for API callers, who read this on every single response.
+
+        Shape: {color: {engine: "R10/R20"}} — one slash-joined string of
+        the queries *remaining* per tier, in FRIEND_LEVELS order, where
+        -1 means unlimited (FRIEND_LIMIT_UNLIMITED). Usage counts and
+        limits are dropped: remaining is the only figure a caller acts
+        on, and the limits were fixed at game start. The full breakdown
+        stays available via _friend_summary_locked() for the board
+        viewer, which renders used/limit as a progress readout.
+
+        This is never omitted, even when nothing has been used yet: an
+        'api-trainee' side must check its own budget before every move
+        (see make_move()'s forfeit rules), so the field has to be
+        present unconditionally for that check to be safe."""
+        return {
+            color: {
+                **{
+                    name: "/".join(
+                        str(_friend_remaining(
+                            self.friend_limits[name][tier], self.friend_used[color][name][tier]
+                        ))
+                        for tier in FRIEND_LEVELS
+                    )
+                    for name in ENGINE_NAMES
+                },
+                # One tier, so one number rather than a slash-joined pair.
+                FRIEND_EVAL_KEY: str(_friend_remaining(
+                    self.friend_eval_limit, self.friend_eval_used[color]
+                )),
+            }
+            for color in ("white", "black")
         }
 
     def _friend_queries_left_locked(self, color):
@@ -803,6 +920,8 @@ class ChessGame:
         whether that side owed a phone_a_friend() call before this move.
         A side with every tier already exhausted (limit 0, or used up)
         owes nothing — there's nothing left to call."""
+        if _friend_remaining(self.friend_eval_limit, self.friend_eval_used[color]) != 0:
+            return True
         return any(
             _friend_remaining(self.friend_limits[name][tier], self.friend_used[color][name][tier]) != 0
             for name in ENGINE_NAMES
@@ -1053,7 +1172,8 @@ class ChessGame:
             self._bump_version_locked()
             return dict(self.player_names)
 
-    def wait_for_change(self, since_version, timeout=25, include_eval=False, include_log=True):
+    def wait_for_change(self, since_version, timeout=25, include_eval=False, include_log=True,
+                        **state_opts):
         """Block until the game state has changed since `since_version`
         (or `timeout` seconds elapse), then return (state_dict, version).
 
@@ -1064,21 +1184,48 @@ class ChessGame:
         """
         with self._lock:
             if since_version != self._version:
-                return self.state(include_eval=include_eval, include_log=include_log), self._version
+                return self.state(include_eval=include_eval, include_log=include_log,
+                                  **state_opts), self._version
             self._change_cond.wait(timeout)
-            return self.state(include_eval=include_eval, include_log=include_log), self._version
+            return self.state(include_eval=include_eval, include_log=include_log,
+                              **state_opts), self._version
 
-    def wait_for_turn(self, color, timeout=None, include_eval=False, include_log=False):
+    def _turn_ready_locked(self, color):
+        """Caller must hold self._lock. True when there is nothing left
+        to wait for on `color`'s behalf: it is that color's turn, the
+        game has ended, or no game has started at all.
+
+        Read straight off the authoritative attributes rather than off a
+        state() dict, since state()'s optional fields (notably 'started')
+        can be gated off by the caller — see state()'s `include_static`.
+        """
+        if not self.started:
+            return True
+        if self._status() not in ("not_started", "in_progress"):
+            return True
+        return ("white" if self.board.turn == chess.WHITE else "black") == color
+
+    def wait_for_turn(self, color, timeout=None, include_eval=False, include_log=False,
+                      state_opts=None):
         """Block until it is `color`'s turn to move, the game ends, or
         `timeout` seconds elapse (default WAIT_DEFAULT_TIMEOUT_SECONDS,
         capped at WAIT_MAX_TIMEOUT_SECONDS) — whichever comes first.
-        Returns the state at that point; the caller should check
-        `state["turn"]` themselves, since a timeout looks the same as any
-        other return here. Used by GET /api/game/wait so an API user can
-        wait for their opponent's move with a single blocking call
-        instead of a poll loop. `include_log` defaults to False here
-        (unlike state()'s own default) since this is a per-move hot-loop
-        call — the caller gets `last_move` instead, which is O(1).
+        Used by GET /api/game/wait so an API user can wait for their
+        opponent's move with a single blocking call instead of a poll
+        loop. `include_log` defaults to False here (unlike state()'s own
+        default) since this is a per-move hot-loop call — the caller gets
+        `last_move` instead, which is O(1). `state_opts` is an optional
+        dict of further keyword arguments for state() (see its gates),
+        letting a caller trim the returned snapshot without this method
+        having to know which fields exist.
+
+        Returns `(state, ready)`. `ready` is True when the wait ended for
+        a reason the caller can act on — it is now `color`'s turn, the
+        game has ended, or no game has started — and False when the
+        timeout simply expired with the position unchanged. Callers use
+        it to avoid re-sending a full state that says nothing happened;
+        it also spares them from having to tell a timeout apart from a
+        real return by inspecting the state themselves.
 
         Returns immediately, without blocking at all, if it is already
         `color`'s turn, the game has already ended, or no game has
@@ -1090,22 +1237,42 @@ class ChessGame:
         timeout = max(0.0, min(timeout, WAIT_MAX_TIMEOUT_SECONDS))
         deadline = time.time() + timeout
 
+        def snapshot_locked(ready):
+            # state_opts wins over this method's own defaults, so a caller
+            # can override include_log (etc.) through either channel
+            # without the two colliding as duplicate keyword arguments.
+            opts = {"include_eval": include_eval, "include_log": include_log}
+            opts.update(state_opts or {})
+            return self.state(**opts), ready
+
         with self._lock:
-            state = self.state(include_eval=include_eval, include_log=include_log)
+            if self._turn_ready_locked(color):
+                return snapshot_locked(True)
             version = self._version
 
         while True:
-            if not state["started"] or state["game_over"] or state["turn"] == color:
-                return state
             remaining = deadline - time.time()
             if remaining <= 0:
-                return state
-            state, version = self.wait_for_change(
-                version, timeout=remaining, include_eval=include_eval, include_log=include_log
+                with self._lock:
+                    return snapshot_locked(self._turn_ready_locked(color))
+            # The returned snapshot is discarded — only the version
+            # matters here — so build the cheapest one available.
+            _, version = self.wait_for_change(
+                version, timeout=remaining, include_log=False, include_board_grid=False
             )
+            with self._lock:
+                if self._turn_ready_locked(color):
+                    return snapshot_locked(True)
 
-    def state(self, include_eval=False, include_log=True):
-        """`include_eval` gates the 'eval' field (the live Stockfish eval
+    def state(self, include_eval=False, include_log=True, include_board_grid=True,
+              include_static=True, friend_detail="full"):
+        """Build the game-state dict. Every gate below defaults to the
+        fullest output, so the board viewer (which needs all of it to
+        render) can keep calling this with no arguments; the REST API
+        turns them down, because it pays for every byte twice — once on
+        the wire and again in the caller's context window.
+
+        `include_eval` gates the 'eval' field (the live Stockfish eval
         bar reading). Defaults to False; the board viewer, which shows the
         eval bar to spectators, is the one caller that passes True.
 
@@ -1115,13 +1282,36 @@ class ChessGame:
         api.py) pass False and read 'last_move' instead, which is always
         exactly one entry or None. The board viewer, which renders full
         game history and chat, passes True (the default) to get the
-        whole log."""
+        whole log.
+
+        `include_board_grid` gates the 'board' field, the 8x8 array of
+        per-square objects built by _board_grid(). It is far and away the
+        largest fixed-size field here — bigger than everything else put
+        together — and it is a third encoding of a position already given
+        by 'fen' and 'board_ascii'. It exists for the board viewer, whose
+        JS indexes it per square and maps each cell's 'code' to a piece
+        image. API callers get the same information from 'fen' in a
+        thirtieth of the space, so api.py passes False.
+
+        `include_static` gates the fields that cannot change for the
+        lifetime of a game — 'started', 'players', 'player_names',
+        'engine_levels', 'engine_names'. Re-sending them on every move
+        is pure repetition, so api.py drops them from its per-move
+        responses and keeps them on the calls that establish or
+        re-establish context (POST /api/game, GET /api/game).
+
+        `friend_detail` is 'full' (the nested used/remaining/limits
+        breakdown from _friend_summary_locked(), for the viewer's player
+        bar) or 'compact' (the terse per-color remaining strings from
+        _friend_summary_compact_locked(), for API callers). The field
+        itself is always present either way — never omitted, whatever
+        the usage, since an 'api-trainee' side has to read it before
+        every move."""
         with self._lock:
             board = self.board
             status = self._status()
             game_over = status not in ("not_started", "in_progress")
             result = {
-                "started": self.started,
                 "status": status,
                 "game_over": game_over,
                 "winner": self._winner() if game_over else None,
@@ -1129,16 +1319,22 @@ class ChessGame:
                 "in_check": board.is_check(),
                 "fen": board.fen(),
                 "board_ascii": str(board),
-                "board": self._board_grid(),
-                "players": {"white": self.white_type, "black": self.black_type},
-                "player_names": dict(self.player_names),
-                "engine_levels": dict(self.engine_levels),
-                "engine_names": dict(self.engine_names),
-                "phone_a_friend": self._friend_summary_locked(),
+                "phone_a_friend": (
+                    self._friend_summary_locked() if friend_detail == "full"
+                    else self._friend_summary_compact_locked()
+                ),
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
                 "last_move": self.move_log[-1] if self.move_log else None,
             }
+            if include_board_grid:
+                result["board"] = self._board_grid()
+            if include_static:
+                result["started"] = self.started
+                result["players"] = {"white": self.white_type, "black": self.black_type}
+                result["player_names"] = dict(self.player_names)
+                result["engine_levels"] = dict(self.engine_levels)
+                result["engine_names"] = dict(self.engine_names)
             if include_log:
                 result["move_log"] = list(self.move_log)
             if include_eval:
@@ -1265,46 +1461,175 @@ class ChessGame:
             self._bump_version_locked()
             return player_entry, engine_entry
 
-    def phone_a_friend(self, level, engine=None):
-        """"Phone a friend": ask an engine for its recommended move in
-        the current position, without submitting it. Only available to
-        the side to move when that side is 'api-user' or 'api-trainee'
-        — this is a hint for a programmatic caller weighing a decision,
-        not something a 'web-user' or the 'engine' side itself needs.
-        `level` must be one of FRIEND_LEVELS; each is budgeted
-        separately, per side, per engine, per game (see
-        self.friend_limits / self.friend_used, set at new_game() time)
-        — GNU Chess hints and Stockfish hints draw on independent
-        quotas, not a shared one, so a side can use both. `engine`
-        (optional, one of ENGINE_NAMES) picks which engine to ask;
-        defaults to DEFAULT_ENGINE if omitted. Calling this does not
-        change the board, does not end your turn, and does not count as
-        your move — you still need to submit a move yourself via
-        make_move(), whether or not you take the suggestion. For an
-        'api-trainee' side, a successful call here (any engine, any
-        level) satisfies that side's phone-a-friend requirement for the
-        move about to be made — see make_move()'s trainee-requirements
-        check. Returns
-        {"level", "engine", "uci", "san", "color", "used", "limit", "remaining"}.
+    def analysis(self, color=None):
+        """Derived tactical facts about the current position, for the
+        side named by `color` (default: the side to move).
+
+        This answers the questions a caller most often gets wrong by
+        reading a board alone: what of mine can be taken, what of theirs
+        can I take, what is pinned, and what captures and checks exist.
+        Every fact here is derivable from the FEN, but deriving it
+        correctly takes care, and a single missed hanging piece loses a
+        game. The server has the board and a chess library, so it does
+        the work once, exactly, instead of the caller redoing it by eye.
+
+        LIMITS — read these before you trust the output. `hanging` is a
+        one-ply heuristic, not a static exchange evaluation. It counts
+        direct attackers and defenders of a square. It does not resolve
+        the full capture sequence, does not see x-ray attacks or
+        batteries behind a first attacker, and does not know whether a
+        defender is itself pinned and so unable to recapture. Treat it
+        as a list of squares that deserve a second look, never as a
+        verdict. `pins` reports absolute pins against the king only, the
+        only kind a chess library can state without ambiguity.
+
+        Returns a dict of:
+        - `color`, `in_check`, and `checkers` (squares of the pieces
+          giving check, empty when not in check)
+        - `hanging`: {"yours": [...], "theirs": [...]} — each entry has
+          `square`, `piece` (uppercase letter), `attackers`, `defenders`
+          (square lists), and `risk`
+        - `pins`: absolutely pinned pieces on both sides
+        - `captures` and `checks`: your legal moves of each kind, in UCI
+        """
+        with self._lock:
+            if not self.started:
+                raise GameError("no game in progress; POST /api/game to start one")
+            board = self.board
+            if color is None:
+                color = "white" if board.turn == chess.WHITE else "black"
+            if color not in ("white", "black"):
+                raise GameError("'color' must be 'white' or 'black'")
+            mine = chess.WHITE if color == "white" else chess.BLACK
+
+            def squares(square_set):
+                return sorted(chess.square_name(s) for s in square_set)
+
+            def scan(owner):
+                """Pieces of `owner` that an opponent attacks, with why
+                the square is worth a second look."""
+                found = []
+                for square, piece in board.piece_map().items():
+                    if piece.color != owner or piece.piece_type == chess.KING:
+                        continue  # a king is never captured; check covers it
+                    attackers = board.attackers(not owner, square)
+                    if not attackers:
+                        continue
+                    defenders = board.attackers(owner, square)
+                    value = PIECE_VALUES[piece.piece_type]
+                    cheapest = min(
+                        PIECE_VALUES[board.piece_at(a).piece_type] for a in attackers
+                    )
+                    if not defenders:
+                        risk = "undefended"
+                    elif cheapest < value:
+                        risk = "attacked by a cheaper piece"
+                    elif len(attackers) > len(defenders):
+                        risk = "more attackers than defenders"
+                    else:
+                        continue  # defended, and no obvious way to win material
+                    found.append({
+                        "square": chess.square_name(square),
+                        "piece": piece.symbol().upper(),
+                        "attackers": squares(attackers),
+                        "defenders": squares(defenders),
+                        "risk": risk,
+                    })
+                return sorted(found, key=lambda e: e["square"])
+
+            pins = []
+            for square, piece in sorted(board.piece_map().items()):
+                if board.is_pinned(piece.color, square):
+                    pins.append({
+                        "square": chess.square_name(square),
+                        "piece": piece.symbol().upper(),
+                        "color": "white" if piece.color == chess.WHITE else "black",
+                    })
+
+            captures, checks = [], []
+            # Legal moves belong to the side to move. When `color` is the
+            # other side, it has no moves to list, so both stay empty.
+            if board.turn == mine:
+                for move in board.legal_moves:
+                    if board.is_capture(move):
+                        captures.append(move.uci())
+                    if board.gives_check(move):
+                        checks.append(move.uci())
+
+            return {
+                "color": color,
+                "in_check": board.is_check() and board.turn == mine,
+                "checkers": squares(board.checkers()) if board.is_check() else [],
+                "hanging": {"yours": scan(mine), "theirs": scan(not mine)},
+                "pins": pins,
+                "captures": captures,
+                "checks": checks,
+            }
+
+    def _phone_a_friend_preamble_locked(self):
+        """Caller must hold self._lock. The eligibility checks every
+        phone-a-friend query shares, whatever its kind (see
+        FRIEND_KINDS). Returns (color, mover_type) for the side to move.
+        Raises GameError if there is no game in progress, or the side to
+        move is not one that may ask for a hint."""
+        if not self.started:
+            raise GameError("no game in progress; POST /api/game to start one")
+        if self._status() != "in_progress":
+            raise GameError(f"game is not in progress (status: {self._status()})")
+        mover_type = self._current_player_type()
+        if mover_type not in API_PLAYER_TYPES:
+            raise GameError(
+                "phone-a-friend is only available to the 'api-user'/'api-trainee' side to move"
+            )
+        return ("white" if self.board.turn == chess.WHITE else "black"), mover_type
+
+    def phone_a_friend(self, level=None, engine=None, kind=DEFAULT_FRIEND_KIND):
+        """"Phone a friend": ask for help with the current position
+        without submitting a move. Only available to the side to move
+        when that side is 'api-user' or 'api-trainee' — this is a hint
+        for a programmatic caller weighing a decision, not something a
+        'web-user' or the 'engine' side itself needs.
+
+        `kind` (see FRIEND_KINDS) picks what to ask for:
+
+        - 'move' (the default): an engine's recommended move. `level`
+          must be one of FRIEND_LEVELS; each is budgeted separately, per
+          side, per engine, per game (see self.friend_limits /
+          self.friend_used, set at new_game() time) — GNU Chess hints and
+          Stockfish hints draw on independent quotas, not a shared one,
+          so a side can use both. `engine` (optional, one of
+          ENGINE_NAMES) picks which engine to ask; defaults to
+          DEFAULT_ENGINE if omitted. Returns {"kind", "level", "engine",
+          "uci", "san", "color", "used", "limit", "remaining"}.
+        - 'eval': Stockfish's assessment of who is winning, rather than
+          what to play — see _phone_a_friend_eval_locked() for the full
+          return shape and the budget it draws on. `level` and `engine`
+          do not apply and are ignored.
+
+        Calling this does not change the board, does not end your turn,
+        and does not count as your move — you still need to submit a move
+        yourself via make_move(), whether or not you act on the answer.
+        For an 'api-trainee' side, a successful call here of *either*
+        kind (any engine, any level) satisfies that side's
+        phone-a-friend requirement for the move about to be made — see
+        make_move()'s trainee-requirements check.
+
         Raises GameError if no game is in progress, it is not an
-        'api-user'/'api-trainee' side's turn, `level` is not a valid
-        tier, `engine` is not a valid engine name, or that side has no
-        queries left at that level for that engine."""
+        'api-user'/'api-trainee' side's turn, `kind` is not a valid kind,
+        `level` is not a valid tier, `engine` is not a valid engine name,
+        or that side has no queries left in the budget being drawn on."""
+        kind = kind or DEFAULT_FRIEND_KIND
+        if kind not in FRIEND_KINDS:
+            raise GameError(f"'kind' must be one of: {', '.join(FRIEND_KINDS)}")
+        if kind == "eval":
+            with self._lock:
+                return self._phone_a_friend_eval_locked()
+
         if level not in FRIEND_LEVELS:
             raise GameError(f"'level' must be one of: {', '.join(str(l) for l in FRIEND_LEVELS)}")
         engine_name = self._validate_engine(engine) if engine is not None else DEFAULT_ENGINE
         with self._lock:
-            if not self.started:
-                raise GameError("no game in progress; POST /api/game to start one")
-            if self._status() != "in_progress":
-                raise GameError(f"game is not in progress (status: {self._status()})")
-            mover_type = self._current_player_type()
-            if mover_type not in API_PLAYER_TYPES:
-                raise GameError(
-                    "phone-a-friend is only available to the 'api-user'/'api-trainee' side to move"
-                )
-
-            color = "white" if self.board.turn == chess.WHITE else "black"
+            color, mover_type = self._phone_a_friend_preamble_locked()
             used = self.friend_used[color][engine_name][level]
             limit = self.friend_limits[engine_name][level]
             if limit != FRIEND_LIMIT_UNLIMITED and used >= limit:
@@ -1332,6 +1657,7 @@ class ChessGame:
             self._bump_version_locked()
 
             return {
+                "kind": "move",
                 "level": level,
                 "engine": engine_name,
                 "uci": uci,
@@ -1342,7 +1668,99 @@ class ChessGame:
                 "remaining": _friend_remaining(limit, self.friend_used[color][engine_name][level]),
             }
 
-    def resign(self, player, include_eval=False):
+    def _phone_a_friend_eval_locked(self):
+        """Caller must hold self._lock. The 'eval' kind of phone-a-friend
+        query (see FRIEND_KINDS): Stockfish's assessment of who is
+        winning the current position, and by how much, rather than a
+        recommendation of what to play.
+
+        Runs on the eval bar's dedicated Stockfish process (see
+        _ensure_eval_engine), whose Skill Level is never lowered from
+        Stockfish's default, for FRIEND_EVAL_TIME_LIMIT seconds — so the
+        answer is the strongest this server can give, and is unaffected
+        by either side's configured difficulty. It is deliberately *not*
+        affected by the eval bar's own quality setting either: 'off' (see
+        EVAL_QUALITIES) turns off the spectators' bar, and says nothing
+        about whether a player may spend one of their own budgeted
+        queries.
+
+        Lock ordering: this holds self._lock and takes self._eval_lock
+        inside it. That is safe against the background _run_eval(), which
+        releases self._eval_lock *before* it ever reaches for self._lock,
+        so the two can never form a cycle. It does hold self._lock for
+        the duration of the search, exactly as the 'move' kind above
+        already does for up to the same 5 seconds at level 20.
+
+        Neither self.eval nor self._eval_log is touched here. Those are
+        the spectators' eval bar and the per-move history the transcript
+        draws on, both keyed to the position *after* a move; this reads
+        the position *before* one, on a player's private budget, so
+        folding it into either would misattribute it.
+
+        Returns {"kind", "engine", "color", "score_cp", "mate", "pov",
+        "eval", "favors", "used", "limit", "remaining"}. `score_cp`
+        (centipawns) and `mate` (moves to a forced mate) are both from
+        *white's* point of view, matching the eval bar and the
+        transcript: a positive number favors white whichever side asked.
+        `eval` is the same reading preformatted ("+0.34", "#3"), and
+        `favors` names the side ahead outright, so a caller playing black
+        cannot misread a sign."""
+        color, mover_type = self._phone_a_friend_preamble_locked()
+        used = self.friend_eval_used[color]
+        limit = self.friend_eval_limit
+        if limit != FRIEND_LIMIT_UNLIMITED and used >= limit:
+            raise GameError(
+                f"phone-a-friend limit reached for {FRIEND_EVAL_KEY} "
+                f"({used} of {limit} used this game)"
+            )
+
+        # analyse() works on the board it is handed and pushes nothing
+        # onto it, but hand it a copy regardless: self.board must not be
+        # reachable by the engine process's own bookkeeping.
+        board = self.board.copy()
+        try:
+            with self._eval_lock:
+                engine_obj = self._ensure_eval_engine()
+                info = engine_obj.analyse(
+                    board, chess.engine.Limit(time=FRIEND_EVAL_TIME_LIMIT)
+                )
+        except Exception as e:
+            # The budget is only spent below, on success, so a failed
+            # analysis costs the caller nothing.
+            raise GameError(f"the evaluation engine could not analyse the position: {e}")
+
+        score = info["score"].pov(chess.WHITE)
+        mate = score.mate()
+        score_cp = None if mate is not None else score.score()
+        if mate is not None:
+            favors = "white" if mate > 0 else "black"
+        elif score_cp > 0:
+            favors = "white"
+        elif score_cp < 0:
+            favors = "black"
+        else:
+            favors = "equal"
+
+        self.friend_eval_used[color] = used + 1
+        if mover_type == "api-trainee":
+            self._friend_called_for_ply[color] = len(self.move_log) + 1
+        self._bump_version_locked()
+
+        return {
+            "kind": "eval",
+            "engine": "stockfish",
+            "color": color,
+            "score_cp": score_cp,
+            "mate": mate,
+            "pov": "white",
+            "eval": _format_eval(score_cp, mate),
+            "favors": favors,
+            "used": self.friend_eval_used[color],
+            "limit": limit,
+            "remaining": _friend_remaining(limit, self.friend_eval_used[color]),
+        }
+
+    def resign(self, player, include_eval=False, state_opts=None):
         player = (player or "").strip().lower()
         if player not in ("white", "black"):
             raise GameError("'player' must be 'white' or 'black'")
@@ -1354,9 +1772,9 @@ class ChessGame:
             self.result_reason = "resigned"
             self.resigned_by = player
             self._bump_version_locked()
-            return self.state(include_eval=include_eval)
+            return self.state(include_eval=include_eval, **(state_opts or {}))
 
-    def abort(self, include_eval=False):
+    def abort(self, include_eval=False, state_opts=None):
         """Immediately end the current game with no winner (status
         "aborted"), regardless of player types — unlike resign(), this
         doesn't need a 'player' side to act as, so it also works for a
@@ -1376,9 +1794,45 @@ class ChessGame:
                 raise GameError(f"game is not in progress (status: {self._status()})")
             self.result_reason = "aborted"
             self._bump_version_locked()
-            return self.state(include_eval=include_eval)
+            return self.state(include_eval=include_eval, **(state_opts or {}))
 
-    def transcript(self):
+    def record_eval_read(self, agent, address):
+        """Note that a client read one of the board viewer's eval-bearing
+        routes while a game was in progress.
+
+        WHY THIS EXISTS. The viewer serves the eval bar to whoever asks:
+        it is an HTTP endpoint with no authentication, so anything a
+        browser can fetch, a script can fetch too. An API player is
+        supposed to pay for an evaluation with the 'eval' kind of
+        phone-a-friend query, which is budgeted (see FRIEND_EVAL_KEY).
+        Reading the viewer instead gets the same information for free.
+
+        That cannot be *prevented* without adding authentication, which
+        this server deliberately does not have. So it is recorded
+        instead. A read that happens is visible afterwards, in the
+        transcript, where anyone reviewing the game will see it.
+
+        LIMITS. `agent` is the client's own User-Agent header, which any
+        client can set to anything. This catches a caller that did not
+        think to disguise itself. It is an audit trail, not a control,
+        and a determined client defeats it by sending a browser's
+        User-Agent string. Do not read a clean record as proof that
+        nobody looked.
+
+        Reads are only recorded while a game is in progress: before or
+        after one, the eval bar gives away nothing worth having.
+        """
+        with self._lock:
+            if not self.started or self._status() != "in_progress":
+                return
+            self.eval_reads.append({
+                "ply": len(self.move_log),
+                "at": time.time(),
+                "agent": (agent or "")[:200],
+                "address": address or "",
+            })
+
+    def transcript(self, include_annotations=True):
         """Build a PGN (Portable Game Notation) transcript of the game
         that just ended — the standard plain-text chess-game format;
         see the module comment above ChessGame for a link. Folds in any
@@ -1400,6 +1854,16 @@ class ChessGame:
         into this one summary artifact instead of staying hidden
         forever. Raises GameError if no game has started, or the
         current game is still in progress.
+
+        `include_annotations` (default True) controls the per-move PGN
+        comments — chat, tactical/strategic reasoning, and the eval read.
+        Pass False for bare movetext: the annotations are unbounded in
+        principle (up to CHAT_MAX_LEN + two REASONING_MAX_LEN per ply),
+        so on a long, heavily-annotated game they can dwarf the moves
+        themselves. That matters for an API caller pulling the result
+        into a context window; the board viewer's download button always
+        takes the full annotated artifact, which is the whole point of
+        keeping the reasoning until the end.
 
         Returns the transcript as a single string (tag pairs, a blank
         line, then movetext ending in the PGN result token)."""
@@ -1459,6 +1923,14 @@ class ChessGame:
             tags.append(("BlackEngine", engine_names.get("black", DEFAULT_ENGINE)))
             tags.append(("BlackEngineLevel", str(engine_levels.get("black", DEFAULT_LEVEL))))
         tags.append(("Termination", TERMINATION_LABELS.get(status, status)))
+        # A non-standard supplementary tag, present only when there is
+        # something to report. The eval bar is free to read and budgeted
+        # to ask for, so a game where somebody read it is worth flagging
+        # to whoever reviews this transcript. See record_eval_read() for
+        # what this does and does not prove.
+        if self.eval_reads:
+            plies = ", ".join(str(entry["ply"]) for entry in self.eval_reads)
+            tags.append(("EvalBarReads", f"{len(self.eval_reads)} (after ply {plies})"))
 
         header = "\n".join(f'[{key} "{_pgn_escape_tag(value)}"]' for key, value in tags)
 
@@ -1468,6 +1940,8 @@ class ChessGame:
             if entry["color"] == "white":
                 parts.append(f"{(ply + 1) // 2}.")
             parts.append(entry["san"])
+            if not include_annotations:
+                continue
             comment_bits = []
             chat = entry.get("chat")
             if chat:

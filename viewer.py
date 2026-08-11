@@ -32,7 +32,7 @@ host/port (which can be remapped independently — see run.sh). They are
 thin wrappers over the same shared `ChessGame` object the REST API
 (port 5003, api.py) uses, so behavior and validation are identical
 either way; the REST API remains the one to use for programmatic play
-(see SKILL.md).
+(see computer-chess/SKILL.md).
 
 Appearance (board squares + piece art) is a purely client-side, per-
 browser preference: it's read from the theme catalogue below, picked
@@ -517,6 +517,12 @@ const ENGINE_TYPES = [
   { id: "gnuchess", label: "GNU Chess" },
   { id: "stockfish", label: "Stockfish" },
 ];
+
+// Mirrors FRIEND_EVAL_KEY in game.py: the key the "eval" phone-a-friend
+// kind's budget appears under in state.phone_a_friend, beside the
+// per-engine move-hint budgets. Not an entry in ENGINE_TYPES above — no
+// side can be played by it; it only ever answers "who is winning?".
+const FRIEND_EVAL_KEY = "stockfish_eval";
 
 const boardWrapEl = document.getElementById("board-wrap");
 const boardEl = document.getElementById("board");
@@ -1095,7 +1101,17 @@ function sideLabel(state, color) {
         if (!eng || !limits) return null;
         return e.label + " " + fmtTier(eng.remaining.level_20, limits.level_20) + " L20, " +
           fmtTier(eng.remaining.level_10, limits.level_10) + " L10";
-      }).filter(Boolean).join("; ");
+      }).filter(Boolean).concat(
+        // The "eval" kind's own budget (FRIEND_EVAL_KEY in game.py) sits
+        // beside the per-engine entries in the same used/remaining shape,
+        // but has a single tier rather than L20/L10.
+        (() => {
+          const ev = f[FRIEND_EVAL_KEY];
+          const evLimits = state.phone_a_friend.limits[FRIEND_EVAL_KEY];
+          if (!ev || !evLimits) return [];
+          return ["Stockfish eval " + fmtTier(ev.remaining.eval, evLimits.eval)];
+        })()
+      ).join("; ");
       typeLabel = type + (perEngine ? " (friend: " + perEngine + ")" : "");
     }
   }
@@ -1147,7 +1163,7 @@ function updateChatPanel(state) {
     line.appendChild(nameSpan);
     line.appendChild(document.createTextNode(entry.chat));
     // Every chat line here comes from move_log — show which move it was
-    // attached to, the same way section 2 of SKILL.md describes it.
+    // attached to, the same way computer-chess/SKILL.md describes it.
     const moveSpan = document.createElement("span");
     moveSpan.className = "chat-move";
     moveSpan.textContent = " (" + entry.san + ")";
@@ -1414,6 +1430,33 @@ async function initStartPanel() {
     friendInputs[eng.id] = { l20, l10 };
   });
 
+  // The "eval" phone-a-friend kind (see FRIEND_KINDS in game.py) is not
+  // one of the per-engine move-hint tiers above: it asks Stockfish who
+  // is winning rather than what to play, and draws on its own budget, so
+  // it gets its own row rather than a third box on the Stockfish one.
+  const evalLimitInput = document.createElement("input");
+  evalLimitInput.type = "number";
+  evalLimitInput.min = "-1"; evalLimitInput.max = "50"; evalLimitInput.step = "1";
+  evalLimitInput.title = "Full-strength Stockfish position evaluations allowed " +
+    "per api-user side (-1 = unlimited)";
+  evalLimitInput.value = "1";
+  const evalTag = document.createElement("span");
+  evalTag.className = "friend-inputs-tag";
+  evalTag.textContent = "\\u00d7 eval";
+  const evalPair = document.createElement("span");
+  evalPair.className = "friend-inputs-pair";
+  evalPair.append(evalLimitInput, evalTag);
+  const evalPairsRow = document.createElement("div");
+  evalPairsRow.className = "friend-engine-pairs";
+  evalPairsRow.append(evalPair);
+  const evalNameTag = document.createElement("span");
+  evalNameTag.className = "friend-inputs-tag friend-engine-name";
+  evalNameTag.textContent = "Stockfish eval";
+  const evalRow = document.createElement("div");
+  evalRow.className = "friend-engine-row";
+  evalRow.append(evalNameTag, evalPairsRow);
+  friendEnginesEl.append(evalRow);
+
   // Each side's engine and level controls are independent: an
   // engine-vs-engine game can (and often should, to be an interesting
   // game to watch) pit two different engines and/or difficulties
@@ -1471,6 +1514,9 @@ async function initStartPanel() {
         if (Object.keys(tiers).length) friendLimits[engId] = tiers;
       });
       if (Object.keys(friendLimits).length) body.friend_limits = friendLimits;
+      if (evalLimitInput.value !== "") {
+        body.friend_eval_limit = parseInt(evalLimitInput.value, 10);
+      }
     }
     try {
       const res = await fetch("/game/start", {
@@ -1566,12 +1612,45 @@ def create_viewer_app(game):
         with game state."""
         return jsonify(boards=load_board_catalogue(), pieces=load_piece_catalogue())
 
+    def _looks_like_a_browser():
+        """True when the request's User-Agent looks like a web browser.
+
+        Every browser sends a User-Agent that starts with "Mozilla/",
+        for historical reasons; curl, wget and the Python HTTP clients
+        do not. That is the whole test.
+
+        Any client can send any User-Agent it likes, so this separates
+        the board viewer's own page from a script that did not think to
+        disguise itself — nothing stronger. It gates only the audit
+        record in _note_eval_read(), never the response, so a wrong
+        answer here costs nobody their eval bar."""
+        return (request.headers.get("User-Agent") or "").startswith("Mozilla/")
+
+    def _note_eval_read():
+        """Record a read of an eval-bearing route by a non-browser
+        client. These routes carry the eval bar's current reading, which
+        an API player is otherwise expected to spend phone-a-friend
+        budget on. See ChessGame.record_eval_read()."""
+        if _looks_like_a_browser():
+            return
+        agent = request.headers.get("User-Agent") or "(none)"
+        address = request.remote_addr or "?"
+        game.record_eval_read(agent, address)
+        app.logger.warning(
+            "eval-bearing route %s read by non-browser client %s (User-Agent: %s)",
+            request.path, address, agent,
+        )
+
     @app.get("/state")
     def state():
         """One-off state fetch. Kept for the no-SSE fallback and for
-        anyone who'd rather poll than stream."""
+        anyone who'd rather poll than stream.
+
+        This response carries the eval bar reading, so a read by anything
+        other than the viewer page is noted — see _note_eval_read()."""
         if not game.is_started():
             return jsonify({"started": False})
+        _note_eval_read()
         return jsonify(game.state(include_eval=True))
 
     @app.get("/events")
@@ -1579,6 +1658,12 @@ def create_viewer_app(game):
         """Server-Sent Events stream: pushes the current state once on
         connect, then again every time the game actually changes (move,
         new game, resignation, ...) — no fixed-interval polling."""
+
+        # Same eval bar reading as /state, pushed instead of polled, so
+        # the same audit note applies. Recorded once per connection, at
+        # connect time, rather than once per pushed event: a browser
+        # holds this stream open for the whole game.
+        _note_eval_read()
 
         def generate():
             version = -1  # guarantees the first wait_for_change() returns immediately
@@ -1602,7 +1687,7 @@ def create_viewer_app(game):
     # game. They exist only so this page's JS can call them same-origin;
     # see the module docstring above for why. Kept out of api.py's
     # request/response shape so that reference stays exactly what an
-    # agent following SKILL.md sees, with nothing viewer-specific in it.
+    # agent following computer-chess/SKILL.md sees, with nothing viewer-specific in it.
 
     def _error(message, status=400):
         return jsonify(error=message), status
@@ -1638,6 +1723,7 @@ def create_viewer_app(game):
         engine = body.get("engine")
         white_engine = body.get("white_engine")
         black_engine = body.get("black_engine")
+        friend_eval_limit = body.get("friend_eval_limit")
         friend_level10_limit = body.get("friend_level10_limit")
         friend_level20_limit = body.get("friend_level20_limit")
         friend_limits = body.get("friend_limits")
@@ -1656,6 +1742,7 @@ def create_viewer_app(game):
                 white, black, level=level, white_level=white_level, black_level=black_level,
                 engine=engine, white_engine=white_engine, black_engine=black_engine,
                 friend_level10_limit=friend_level10_limit, friend_level20_limit=friend_level20_limit,
+                friend_eval_limit=friend_eval_limit,
                 engine_friend_limits=engine_friend_limits, include_eval=True,
             )
         except GameError as e:
@@ -1722,9 +1809,17 @@ def create_viewer_app(game):
         """Backs the page's "Download transcript" button, shown once the
         game has ended (see transcriptBtnEl in the JS). Same underlying
         call as the REST API's GET /api/game/transcript — a downloadable
-        PGN file, not JSON."""
+        PGN file, not JSON.
+
+        This always serves the complete, fully annotated transcript, with
+        every chat line, both reasoning fields, and the eval read on every
+        move. Unlike the REST API's copy of this endpoint it takes no
+        'include' parameter and offers no way to ask for less: the file is
+        going to disk for a person to keep and review, so there is nothing
+        to be gained by trimming it and a finished game's whole record to
+        lose."""
         try:
-            pgn = game.transcript()
+            pgn = game.transcript(include_annotations=True)
         except GameError as e:
             return _error(str(e))
         return Response(
