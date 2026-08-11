@@ -83,11 +83,12 @@ below are one example, not a starting point to expect:
 budget remaining: L10 GNU Chess 3; L20 GNU Chess 1; L10 Stockfish 0; L20 Stockfish 2; Stockfish Eval 4
 ```
 
-Each engine shows `level_10/level_20` remaining. `stockfish_eval` has
-one tier, so it is a single number. `-1` means unlimited. `0` means
-that one is spent — try the other engine, the other kind, or decide on
-your own. In the example above, GNU Chess still has hints at both
-levels, and Stockfish has level-20 hints only.
+The line always labels all five budgets separately: L10 GNU Chess, L20
+GNU Chess, L10 Stockfish, L20 Stockfish, and Stockfish Eval. `-1` means
+unlimited. `0` means that specific budget is spent — try another engine,
+level, or kind of help, or decide on your own. In the example above,
+GNU Chess still has hints at both levels, and Stockfish has level-20
+hints only.
 
 A failed query costs you nothing.
 
