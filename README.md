@@ -83,15 +83,15 @@ same reference as JSON.
 {"white": "api-user", "black": "engine", "level": 10}
 ```
 
-`white` and `black` are each one of four types: `"api-user"` (an API
+`white` and `black` are each one of five types: `"api-user"` (an API
 user that submits moves through this API), `"api-trainee"` (see
-below), `"engine"` (GNU Chess or Stockfish — see `engine` below), or
+below), `"engine"` (GNU Chess or Stockfish — see `engine` below),
 `"web-user"` (a person playing through the board viewer on port 5004,
-by clicking the board). Every combination is supported, including two
-engines. When both sides are `"engine"`, the two engines play each
-other. This game needs no further calls. It plays itself out in the
-background, one paced move at a time, so it streams to the board
-viewer like any other game.
+by clicking the board), or `"centaur"` (see below). Every combination
+is supported, including two engines. When both sides are `"engine"`,
+the two engines play each other. This game needs no further calls. It
+plays itself out in the background, one paced move at a time, so it
+streams to the board viewer like any other game.
 
 `"api-trainee"` behaves exactly like `"api-user"` — same REST calls,
 same responses — except it enforces a discipline on top: every move
@@ -105,6 +105,18 @@ move is discarded — never applied to the board — and the game ends on
 the spot with status `"forfeited"` and the other side declared the
 winner. There is no warning and no second attempt; a trainee side gets
 exactly one chance per move to follow the process.
+
+`"centaur"` also requires both `tactical_reasoning` and
+`strategic_reasoning` on every move, but never moves the board
+directly at all: an API caller for a `"centaur"` side can only
+*suggest* a move, via `POST /api/game/suggest`, not play one — see
+that endpoint below. A person at the board viewer (port 5004) then
+either accepts the suggestion as-is or plays a different legal move
+instead; `POST /api/game/move` always fails for a `"centaur"` side's
+turn, by design. Unlike `"api-trainee"`, a suggestion missing either
+reasoning field is simply rejected (`400`, nothing stored, retry
+freely) rather than a forfeit — nothing has been committed to the
+board yet, so there's no wasted turn to punish.
 
 `level` (optional, `0`-`20`, weakest to strongest — Stockfish's own
 native "Skill Level" scale) sets the difficulty for both sides at
@@ -361,7 +373,8 @@ and the expanded `phone_a_friend` breakdown back.
   },
   "fullmove_number": 1,
   "halfmove_clock": 0,
-  "last_move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"}
+  "last_move": {"ply": 1, "color": "white", "uci": "e2e4", "san": "e4", "by": "api-user", "name": "Deep Purple", "chat": "Good luck!"},
+  "pending_suggestion": {"white": null, "black": null}
 }
 ```
 
@@ -429,6 +442,14 @@ move. This endpoint, `POST /api/game/move`, `POST
 this one entry, not the full move log, so their response size stays
 constant no matter how long the game runs — safe to call once per
 move in a loop.
+
+`pending_suggestion` holds each side's not-yet-played `"centaur"`
+suggestion (`null` unless that side is `"centaur"` and has an unplayed
+suggestion) — see `POST /api/game/suggest` below. It carries `uci`,
+`san`, `tactical_reasoning`, `strategic_reasoning`, and optionally
+`chat`, the same shape a `POST /api/game/suggest` response returns.
+Unlike `phone_a_friend`, it is never gated by `?verbose=1` — at most
+one entry is ever non-`null`, so there's nothing to trim.
 
 The five fields that cannot change while a game runs — `started`,
 `players`, `player_names`, `engine_levels` and `engine_names` — are
@@ -521,8 +542,9 @@ transcript, since there is no longer any ongoing advantage to protect.
 ```
 
 This endpoint returns `400` for an illegal or unparseable move, for a
-move submitted during the engine's turn, or when no game is in
-progress.
+move submitted during the engine's turn, for a move submitted during a
+`"centaur"` side's turn (use `POST /api/game/suggest` instead — see
+below), or when no game is in progress.
 
 **`"api-trainee"` forfeits.** If the side to move is `"api-trainee"`
 and it either didn't call `POST /api/game/phone-a-friend` before this
@@ -539,6 +561,38 @@ this case:
 Check for the `"forfeited"` key rather than assuming the ordinary
 `{"move", "engine_move", "state"}` shape whenever the mover is
 `"api-trainee"`.
+
+### `POST /api/game/suggest` — suggest a move (`"centaur"` only)
+
+```json
+{"move": "e2e4", "tactical_reasoning": "no immediate tactics", "strategic_reasoning": "e4 grabs the center", "chat": "Good luck!"}
+```
+
+For a `"centaur"` side to move only — `400` if it isn't that side's
+turn, or the side isn't `"centaur"`. Unlike `POST /api/game/move`,
+this never touches the board: the move is only checked for legality,
+then stored as this side's `pending_suggestion` (see `GET /api/game`
+above), replacing whatever was suggested before. A person at the board
+viewer (port 5004) then either accepts it as-is or plays a different
+legal move instead — `POST /api/game/move` always fails for a
+`"centaur"` side's turn, by design; there is no way to finalize a move
+for this side through the REST API.
+
+`tactical_reasoning` and `strategic_reasoning` (same limits as
+`POST /api/game/move`) are **both required** here — omitting either
+returns `400` with nothing stored, so simply retry with them filled
+in. This is a plain rejection, not a forfeit like `"api-trainee"`'s:
+nothing has been committed to the board yet, so there is no wasted
+turn to punish. `chat` (optional) is carried along on the stored
+suggestion for the person at the board to read before deciding.
+
+```json
+{"suggestion": {"uci": "e2e4", "san": "e4", "by": "centaur", "name": "Deep Purple", "tactical_reasoning": "no immediate tactics", "strategic_reasoning": "e4 grabs the center", "chat": "Good luck!"},
+ "state": {...}}
+```
+
+Calling this again before the suggestion is played simply replaces it
+— there is no queue, and no error for suggesting more than once.
 
 ### `POST /api/game/phone-a-friend` — ask an engine for help
 
@@ -797,6 +851,9 @@ picks a type for White and a type for Black:
 - `engine` — GNU Chess or Stockfish plays this side (see below).
 - `web-user` — the person at this page plays this side, by clicking
   the board (see below).
+- `centaur` — the REST API can only suggest a move (see
+  `POST /api/game/suggest`); the person at this page decides whether
+  to play it or something else (see below).
 
 Each side that is `engine` gets its own engine dropdown (GNU Chess or
 Stockfish) and its own difficulty dropdown, so an engine-vs-engine
@@ -814,6 +871,18 @@ needed.
 page lets that person click a piece. Then the person clicks a
 highlighted square to move there. If the move is a promotion, the page
 shows a small picker for the piece to promote to.
+
+**Playing centaur.** When it is a `centaur` side's turn, the page
+behaves like `web-user` — click a piece, then a highlighted square, to
+play any legal move — with one addition: once the API has called
+`POST /api/game/suggest`, its suggestion appears as a dashed arrow in
+a distinct color from the last-move arrow, with the suggested squares
+outlined, and an "Accept suggestion: `<move>`" button appears above
+the board. Clicking it plays that exact move. Playing anything else
+instead — by clicking the board as usual — simply overrides the
+suggestion; there is no separate "reject" step. Until a suggestion
+arrives, the status line reads "waiting for a suggestion from the
+API".
 
 **Names and chat.** A players bar above the board shows each side's
 display name, type, and — for an `"engine"` side — which engine it is
