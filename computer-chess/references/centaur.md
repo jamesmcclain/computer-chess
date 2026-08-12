@@ -39,6 +39,19 @@ your suggestion or played something else. Read the new position with
 `turn` before suggesting again; do not assume your suggestion was the one
 played.
 
+## You can still phone a friend
+
+A `centaur` side has the same phone-a-friend budget as `api-user` and
+`api-trainee`. Ask before you suggest, the same way section 4 of
+SKILL.md describes:
+
+```bash
+python3 scripts/chess.py phone-a-friend --side white eval
+```
+
+A query never touches the board and never counts as your suggestion.
+Use it to inform the move you then send with `suggest`.
+
 ## What "suggest" is not
 
 - It is not a move. It does not end your turn, and it does not change

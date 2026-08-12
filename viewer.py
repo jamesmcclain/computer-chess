@@ -1194,6 +1194,14 @@ function render(state) {
     "  |  move " + state.fullmove_number;
 }
 
+// True for a side whose type draws on the phone-a-friend budget — see
+// API_PLAYER_TYPES in game.py. Shared by the start form (which side's
+// budget inputs to show) and sideLabel() below (which side's remaining
+// budget to display in the players bar).
+function isApiUserLike(value) {
+  return value === "api-user" || value === "api-trainee" || value === "centaur";
+}
+
 // Text form of a side's identity, shared by the meta line and the players
 // bar: its display name if one is set (see set_name()), its type, and —
 // for an "engine" side — its difficulty level.
@@ -1205,7 +1213,7 @@ function sideLabel(state, color) {
     const engineName = state.engine_names && state.engine_names[color];
     const engineLabel = (ENGINE_TYPES.find(e => e.id === engineName) || {}).label || engineName || type;
     typeLabel = engineLabel + " (level " + state.engine_levels[color] + ")";
-  } else if ((type === "api-user" || type === "api-trainee") && state.phone_a_friend) {
+  } else if (isApiUserLike(type) && state.phone_a_friend) {
     const f = state.phone_a_friend[color];
     if (f) {
       // Each engine has its own independent quota (see phone_a_friend()
@@ -1516,14 +1524,14 @@ async function initStartPanel() {
   ENGINE_TYPES.forEach((eng) => {
     const l20 = document.createElement("input");
     l20.type = "number"; l20.min = "-1"; l20.max = "50"; l20.step = "1";
-    l20.title = "Level-20 phone-a-friend queries allowed per api-user side, " + eng.label + " (-1 = unlimited)";
+    l20.title = "Level-20 phone-a-friend queries allowed per side, " + eng.label + " (-1 = unlimited)";
     l20.value = "1";
     const l20Tag = document.createElement("span");
     l20Tag.className = "friend-inputs-tag";
     l20Tag.textContent = "\\u00d7 L20";
     const l10 = document.createElement("input");
     l10.type = "number"; l10.min = "-1"; l10.max = "50"; l10.step = "1";
-    l10.title = "Level-10 phone-a-friend queries allowed per api-user side, " + eng.label + " (-1 = unlimited)";
+    l10.title = "Level-10 phone-a-friend queries allowed per side, " + eng.label + " (-1 = unlimited)";
     l10.value = "2";
     const l10Tag = document.createElement("span");
     l10Tag.className = "friend-inputs-tag";
@@ -1555,7 +1563,7 @@ async function initStartPanel() {
   evalLimitInput.type = "number";
   evalLimitInput.min = "-1"; evalLimitInput.max = "50"; evalLimitInput.step = "1";
   evalLimitInput.title = "Full-strength Stockfish position evaluations allowed " +
-    "per api-user side (-1 = unlimited)";
+    "per side (-1 = unlimited)";
   evalLimitInput.value = "1";
   const evalTag = document.createElement("span");
   evalTag.className = "friend-inputs-tag";
@@ -1578,12 +1586,10 @@ async function initStartPanel() {
   // engine-vs-engine game can (and often should, to be an interesting
   // game to watch) pit two different engines and/or difficulties
   // against each other. The "phone a friend" budget only matters if at
-  // least one side will be 'api-user'/'api-trainee' — it's set once for
-  // the whole game and tracked separately per side (see
-  // POST /api/game/phone-a-friend).
-  function isApiUserLike(value) {
-    return value === "api-user" || value === "api-trainee";
-  }
+  // least one side will be 'api-user'/'api-trainee'/'centaur' — it's set
+  // once for the whole game and tracked separately per side (see
+  // POST /api/game/phone-a-friend). isApiUserLike() is defined at
+  // top level, alongside sideLabel(), which shares it.
   function refreshLevelVisibility() {
     whiteEngineRow.style.display = whiteSel.value === "engine" ? "flex" : "none";
     blackEngineRow.style.display = blackSel.value === "engine" ? "flex" : "none";

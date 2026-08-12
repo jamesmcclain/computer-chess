@@ -149,8 +149,8 @@ already in progress.
 integers `0`-`50` or `-1` for unlimited, default `2` and `1`
 respectively) set this game's "phone a friend" budget. This budget
 is how many level-10 and level-20 engine hints an
-`"api-user"`/`"api-trainee"` side can request over the game, for
-*every* engine at once. Each engine's quota is tracked separately,
+`"api-user"`/`"api-trainee"`/`"centaur"` side can request over the
+game, for *every* engine at once. Each engine's quota is tracked separately,
 not pooled. `friend_limits` (optional, an object of the form
 `{engine_name: {tier: limit}}`, for example
 `{"stockfish": {"10": 5}, "gnuchess": {"20": 0}}`) sets one or more
@@ -416,7 +416,7 @@ two level-10 hints and one level-20 hint still available. `"0/0"`
 means that engine is exhausted. The bundled `chess.py` expands these
 compact values into five labeled budgets for agents. See
 `POST /api/game/phone-a-friend` below. Only an `"api-user"`/
-`"api-trainee"` side can use this budget. The field is always
+`"api-trainee"`/`"centaur"` side can use this budget. The field is always
 present, whatever the usage and whoever is playing, so anyone who
 reads the state can see it. An `"api-trainee"` side in particular
 must check it before every move.
@@ -627,8 +627,8 @@ it. There is no queue, and no error for suggesting more than once.
 {"kind": "eval"}
 ```
 
-This endpoint works only for the `"api-user"`/`"api-trainee"` side to
-move. It asks for help with the current position without a move: the
+This endpoint works only for the `"api-user"`/`"api-trainee"`/
+`"centaur"` side to move. It asks for help with the current position without a move: the
 board stays unchanged, and your turn does not end. This call is not
 a substitute for `POST /api/game/move`. You still submit your own
 move afterward, whether or not you act on the answer. For an
@@ -709,7 +709,7 @@ from the per-engine tiers, because it is not one of them.
 Returns `400` for any of these reasons:
 
 - It is not your turn.
-- Your side is not `"api-user"`/`"api-trainee"`.
+- Your side is not `"api-user"`/`"api-trainee"`/`"centaur"`.
 - `kind` is not `"move"` or `"eval"`.
 - `level` is not `10` or `20` on a `"move"` query.
 - `engine` is not a valid engine name.
@@ -899,9 +899,9 @@ Each side that is `engine` gets its own engine dropdown (GNU Chess
 or Stockfish) and its own difficulty dropdown. As a result, an
 engine-vs-engine game can pit two different engines, two different
 strengths, or both, against each other. Whenever either side is
-`api-user` or
-`api-trainee`, the form also shows phone-a-friend inputs: independent
-L10 and L20 limits for GNU Chess and Stockfish, plus the separate
+`api-user`, `api-trainee`, or `centaur`, the form also shows
+phone-a-friend inputs: independent L10 and L20 limits for GNU Chess
+and Stockfish, plus the separate
 Stockfish Eval limit. See `POST /api/game/phone-a-friend` above. The
 form supports every combination of the five player types, including
 API users or trainees against an engine, a web user, or a centaur,
@@ -927,9 +927,9 @@ suggestion from the API".
 
 **Names and chat.** A players bar above the board shows each side's
 display name and type. For an `"engine"` side, the bar also shows
-which engine it is and its difficulty level. For an `"api-user"` or
-`"api-trainee"` side, the bar shows its five remaining
-phone-a-friend budgets: L10 GNU Chess, L20 GNU Chess, L10 Stockfish,
+which engine it is and its difficulty level. For an `"api-user"`,
+`"api-trainee"`, or `"centaur"` side, the bar shows its five
+remaining phone-a-friend budgets: L10 GNU Chess, L20 GNU Chess, L10 Stockfish,
 L20 Stockfish, and Stockfish Eval. Set a name with
 `POST /api/game/name`. The side to move is highlighted. Any move
 that carried `chat` (see `POST /api/game/move`) shows up in a chat

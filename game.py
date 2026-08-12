@@ -152,7 +152,9 @@ DEFAULT_EVAL_QUALITY = "balanced"
 #                   Unlike "api-trainee", a suggestion missing either
 #                   reasoning field is simply rejected (400, retryable) —
 #                   not a forfeit, since nothing has been committed to the
-#                   board yet.
+#                   board yet. Like "api-user"/"api-trainee", a "centaur"
+#                   side may use phone-a-friend (see API_PLAYER_TYPES) to
+#                   inform its suggestion before submitting it.
 # "api-user", "api-trainee", and "web-user" all behave identically to the
 # game itself (each is just "a move shows up for this side eventually");
 # the distinction only matters for display (the "by" field on a move, and
@@ -165,11 +167,13 @@ DEFAULT_EVAL_QUALITY = "balanced"
 # suggest_move() and pending_suggestion below.
 PLAYER_TYPES = ("api-user", "api-trainee", "web-user", "engine", "centaur")
 
-# Player types that get to use phone-a-friend / must satisfy "api-trainee"'s
-# extra requirements the same way "api-user" does — i.e. every place that
-# used to check `mover_type == "api-user"` now checks
-# `mover_type in API_PLAYER_TYPES`.
-API_PLAYER_TYPES = ("api-user", "api-trainee")
+# Player types eligible to use phone-a-friend (see
+# _phone_a_friend_preamble_locked) — every side driven by a programmatic
+# caller, whether it moves directly ("api-user", "api-trainee") or only
+# suggests ("centaur"). "web-user" and "engine" are excluded: a hint is
+# for a caller weighing a decision, not something a person clicking the
+# board or the engine itself needs.
+API_PLAYER_TYPES = ("api-user", "api-trainee", "centaur")
 
 # Pause between moves when both sides are "engine" and the game is playing
 # itself out in the background (see ChessGame._start_autoplay). Purely for
@@ -1691,16 +1695,18 @@ class ChessGame:
         mover_type = self._current_player_type()
         if mover_type not in API_PLAYER_TYPES:
             raise GameError(
-                "phone-a-friend is only available to the 'api-user'/'api-trainee' side to move"
+                "phone-a-friend is only available to the 'api-user'/'api-trainee'/"
+                "'centaur' side to move"
             )
         return ("white" if self.board.turn == chess.WHITE else "black"), mover_type
 
     def phone_a_friend(self, level=None, engine=None, kind=DEFAULT_FRIEND_KIND):
         """"Phone a friend": ask for help with the current position
         without submitting a move. Only available to the side to move
-        when that side is 'api-user' or 'api-trainee' — this is a hint
-        for a programmatic caller weighing a decision, not something a
-        'web-user' or the 'engine' side itself needs.
+        when that side is 'api-user', 'api-trainee', or 'centaur' — see
+        API_PLAYER_TYPES — this is a hint for a programmatic caller
+        weighing a decision, not something a 'web-user' or the 'engine'
+        side itself needs.
 
         `kind` (see FRIEND_KINDS) picks what to ask for:
 
