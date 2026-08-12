@@ -1,6 +1,6 @@
 ---
 name: computer-chess
-description: Play chess through the computer-chess REST service, a dockerized chess server (GNU Chess and Stockfish, both equally supported) with a JSON API on port 5003 and a board viewer on port 5004. Use this skill when the user wants to start, join, play, watch, or check a game — against an engine, another API user, or a person on the board viewer. It also covers a specific move, the side to move, and the game result. Read this skill before you call the API by hand. It gives the move loop, the scripts/chess.py helper that makes the calls, and the turn-taking and end-of-game rules for correct play.
+description: Play chess through the computer-chess REST service, a dockerized chess server (GNU Chess and Stockfish, both equally supported) with a JSON API on port 5003 and a board viewer on port 5004. Use this skill when the user wants to start, join, play, watch, or check a game — against an engine, another API user, or a person on the board viewer. This covers "centaur mode", where the API side suggests a move and a person at the board viewer finalizes it, and "trainee mode", the phone-a-friend discipline. It also covers a specific move, the side to move, and the game result. Read this skill before you call the API by hand. It gives the move loop, the scripts/chess.py helper that makes the calls, and the turn-taking and end-of-game rules for correct play.
 ---
 
 # Playing chess through computer-chess
@@ -62,8 +62,14 @@ python3 scripts/chess.py join --side white --name "Deep Purple"
 ```
 
 `join` confirms that the side is one you can play, and that the game is
-still running. It refuses an `engine` or `web-user` side. The `--name`
-is optional and cosmetic.
+still running. It works for an `api-user`, `api-trainee`, or `centaur`
+side. It refuses an `engine` or `web-user` side. The `--name` is
+optional and cosmetic.
+
+If the side is `centaur`, `join` tells you so, and reminds you to use
+`suggest`, not `move`. Read **`references/centaur.md`** before your
+first move on that side, even if the user never said "centaur mode" —
+the game itself tells you the side's type.
 
 Read **`references/setup.md`** for these topics:
 
@@ -82,6 +88,9 @@ python3 scripts/chess.py set --side black --level 3
 
 If the user asks for "trainee mode" by name, read
 **`references/trainee.md`** first. Do not use trainee mode otherwise.
+
+If the user asks for "centaur mode" by name, read
+**`references/centaur.md`** first. Do not use centaur mode otherwise.
 
 ## 2. The move loop
 
@@ -128,6 +137,11 @@ python3 scripts/chess.py move --side white e2e4 \
   --tactical "No captures or checks to calculate yet." \
   --strategic "e4 takes the center and frees the bishop and queen."
 ```
+
+If your side is `centaur`, use `suggest` here instead of `move`. A
+`suggest` call never plays the move. It only proposes it. A person at
+the board viewer accepts it or plays a different move. Read
+**`references/centaur.md`** for the full loop.
 
 `--side` is required. The API has no login. In a game between two API
 callers, the server accepts a move sent on the wrong side and applies

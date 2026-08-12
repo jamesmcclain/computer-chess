@@ -2,7 +2,7 @@
 
 You can ask for help with the current position without submitting a
 move. It is available only on your own turn, and only when your side is
-`api-user` or `api-trainee`.
+`api-user`, `api-trainee`, or `centaur`.
 
 A query never changes the board, never ends your turn, and never counts
 as your move. You still choose and submit your own move afterwards.
