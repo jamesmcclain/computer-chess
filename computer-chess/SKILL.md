@@ -83,6 +83,9 @@ python3 scripts/chess.py set --side black --level 3
 If the user asks for "trainee mode" by name, read
 **`references/trainee.md`** first. Do not use trainee mode otherwise.
 
+If the user asks for "centaur mode" by name, read
+**`references/centaur.md`** first. Do not use centaur mode otherwise.
+
 ## 2. The move loop
 
 Repeat these steps for each of your turns. Perform the loop yourself,

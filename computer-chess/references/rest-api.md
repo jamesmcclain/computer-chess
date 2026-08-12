@@ -28,6 +28,13 @@ curl -X POST http://10.0.2.2:5003/api/game/move \
        "tactical_reasoning": "No captures or checks to calculate.",
        "strategic_reasoning": "e4 takes the center."}'
 
+# suggest a move for a 'centaur' side — never applied, see centaur.md
+curl -X POST http://10.0.2.2:5003/api/game/suggest \
+  -H 'Content-Type: application/json' \
+  -d '{"move": "e2e4", "chat": "Good luck!",
+       "tactical_reasoning": "No captures or checks to calculate.",
+       "strategic_reasoning": "e4 takes the center."}'
+
 # block until your turn
 curl 'http://10.0.2.2:5003/api/game/wait?color=white&timeout=25'
 
@@ -60,6 +67,9 @@ second look.
 - `POST /api/game/move` returns `{"forfeited": true, ...}` instead of
   the usual shape when an `api-trainee` side breaks a requirement. See
   `trainee.md`.
+- `POST /api/game/move` always fails for a `centaur` side's turn — use
+  `POST /api/game/suggest` instead, which never touches the board. See
+  `centaur.md`.
 - A `400` carries an `error` field. Read it before you retry.
 
 ## The check the script does for you

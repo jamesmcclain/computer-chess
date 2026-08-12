@@ -315,6 +315,32 @@ def cmd_move(args):
     return 0
 
 
+def cmd_suggest(args):
+    """Suggest a move for a 'centaur' side. This never plays the move —
+    it only proposes it. A person at the board viewer decides whether to
+    accept it or play something else instead; there is no way to force it
+    onto the board from here."""
+    verify_side(args.url, args.side)
+    legal = call(args.url, "GET", "/api/game/legal-moves")
+    if args.move not in legal["moves"].split():
+        raise ApiError(
+            f"{args.move!r} is not legal in this position. "
+            f"Legal moves ({legal['count']}): {legal['moves']}"
+        )
+    body = {
+        "move": args.move,
+        "chat": args.chat,
+        "tactical_reasoning": args.tactical,
+        "strategic_reasoning": args.strategic,
+    }
+    result = call(args.url, "POST", "/api/game/suggest", body)
+    suggestion = result["suggestion"]
+    print(f"suggested: {suggestion['san']} ({suggestion['uci']}) — NOT played. "
+          "Waiting for a person at the board to accept it or play a different move.")
+    print(status_line(result["state"], args.side))
+    return 0
+
+
 def parse_query(spec):
     """Turn one phone-a-friend query spec into a request body.
 
@@ -403,10 +429,10 @@ def cmd_join(args):
     players = state.get("players") or {}
     kind = players.get(args.side)
     other = players.get("white" if args.side == "black" else "black")
-    if kind not in ("api-user", "api-trainee"):
+    if kind not in ("api-user", "api-trainee", "centaur"):
         raise ApiError(
             f"the {args.side} side is {kind!r}, which you cannot take over. "
-            f"Only 'api-user' and 'api-trainee' sides are joinable. "
+            f"Only 'api-user', 'api-trainee', and 'centaur' sides are joinable. "
             f"Start a new game instead."
         )
     if state.get("game_over"):
@@ -421,6 +447,9 @@ def cmd_join(args):
     if kind == "api-trainee":
         print("TRAINEE: phone-a-friend before every move, or forfeit. "
               "See references/trainee.md.")
+    if kind == "centaur":
+        print("CENTAUR: use 'suggest', not 'move' — a person at the board "
+              "viewer finalizes every move. See references/centaur.md.")
     print(status_line(state, args.side))
     last = describe_move(state.get("last_move"))
     if last:
@@ -482,9 +511,9 @@ def build_parser():
 
     new = subparsers.add_parser("new", help="start a new game")
     new.add_argument("--white", required=True,
-                     choices=["api-user", "api-trainee", "web-user", "engine"])
+                     choices=["api-user", "api-trainee", "web-user", "engine", "centaur"])
     new.add_argument("--black", required=True,
-                     choices=["api-user", "api-trainee", "web-user", "engine"])
+                     choices=["api-user", "api-trainee", "web-user", "engine", "centaur"])
     new.add_argument("--level", type=int)
     new.add_argument("--white-level", type=int, dest="white_level")
     new.add_argument("--black-level", type=int, dest="black_level")
@@ -537,6 +566,16 @@ def build_parser():
     move.add_argument("--tactical", required=True, help="private: concrete calculation")
     move.add_argument("--strategic", required=True, help="private: the longer-term plan")
     move.set_defaults(func=cmd_move)
+
+    suggest = subparsers.add_parser(
+        "suggest", help="suggest a move for a 'centaur' side (does not play it)")
+    suggest.add_argument("move", help="the move in UCI, e.g. e2e4 or e7e8q")
+    suggest.add_argument("--side", required=True, choices=["white", "black"],
+                         help="the color you are suggesting for; refuses to act if it is not that side's turn")
+    suggest.add_argument("--chat", required=True, help="banter only, visible to everyone")
+    suggest.add_argument("--tactical", required=True, help="private: concrete calculation")
+    suggest.add_argument("--strategic", required=True, help="private: the longer-term plan")
+    suggest.set_defaults(func=cmd_suggest)
 
     friend = subparsers.add_parser(
         "phone-a-friend", help="ask for one or more hints or a position evaluation")
