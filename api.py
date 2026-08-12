@@ -37,8 +37,8 @@ API_DOC = {
                     "both equally supported everywhere an 'engine' side is.",
     "endpoints": {
         "POST /api/game": {
-            "body": {"white": "api-user|api-trainee|web-user|engine",
-                     "black": "api-user|api-trainee|web-user|engine",
+            "body": {"white": "api-user|api-trainee|web-user|engine|centaur",
+                     "black": "api-user|api-trainee|web-user|engine|centaur",
                      "level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
                      "white_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
                      "black_level": f"{LEVEL_MIN}-{LEVEL_MAX}, optional",
@@ -78,6 +78,14 @@ API_DOC = {
                             "Skipping either forfeits the game immediately: "
                             "the submitted move is discarded, status "
                             "becomes 'forfeited', and the other side wins. "
+                            "'centaur' also requires 'tactical_reasoning' "
+                            "and 'strategic_reasoning' on every move, but "
+                            "never moves the board directly — see "
+                            "POST /api/game/suggest — a person at the "
+                            "board viewer (port 5004) must accept the "
+                            "suggestion or play a different move instead; "
+                            "a suggestion missing either reasoning field is "
+                            "just rejected (400), not a forfeit. "
                             "Both sides can be 'engine'; the "
                             "two engines then play each other, paced one "
                             "move at a time, with no further calls needed. "
@@ -130,7 +138,10 @@ API_DOC = {
                           "status, the single most recent move "
                           "('last_move', including any chat attached to "
                           "it), engine levels and engine choices, player "
-                          "names, and phone-a-friend budget. Responses "
+                          "names, phone-a-friend budget, and each side's "
+                          "'pending_suggestion' (null unless that side is "
+                          "'centaur' and has an unplayed suggestion — see "
+                          "POST /api/game/suggest). Responses "
                           "omit the 8x8 'board' grid and the full "
                           "'move_log' — 'fen' and 'last_move' carry the "
                           "same information far more compactly. Add "
@@ -221,6 +232,29 @@ API_DOC = {
                             "...} instead of {'move', 'engine_move', "
                             "'state'} — check for 'forfeited' rather than "
                             "assuming the ordinary shape.",
+        },
+        "POST /api/game/suggest": {
+            "body": {"move": "e2e4 (UCI) or e4 (SAN)",
+                     "tactical_reasoning": "required, up to 1000 chars",
+                     "strategic_reasoning": "required, up to 1000 chars",
+                     "chat": "optional, up to 240 chars"},
+            "description": "Suggest a move for a 'centaur' side to move — "
+                            "400 if it isn't that side's turn or the side "
+                            "isn't 'centaur'. Unlike POST /api/game/move, "
+                            "this never touches the board: the move is only "
+                            "checked for legality, then stored as this "
+                            "side's pending suggestion (see "
+                            "'pending_suggestion' in GET /api/game), "
+                            "replacing whatever was suggested before. A "
+                            "person at the board viewer (port 5004) then "
+                            "either accepts it as-is or plays a different "
+                            "legal move instead — POST /api/game/move "
+                            "always fails for a 'centaur' side's turn, by "
+                            "design. Both 'tactical_reasoning' and "
+                            "'strategic_reasoning' are required; omitting "
+                            "either is rejected (400, nothing stored) "
+                            "rather than a forfeit, since nothing has been "
+                            "committed to the board.",
         },
         "GET /api/game/wait": {
             "query": {"color": "white|black",
@@ -574,6 +608,7 @@ def create_api_app(game):
                 move_str, chat=chat,
                 tactical_reasoning=tactical_reasoning,
                 strategic_reasoning=strategic_reasoning,
+                source="api",
             )
         except GameError as e:
             return error(str(e))
@@ -582,6 +617,25 @@ def create_api_app(game):
             return jsonify(forfeited=True, by=player_move["by"],
                             reasons=player_move["reasons"], state=game.state(**opts))
         return jsonify(move=player_move, engine_move=engine_move, state=game.state(**opts))
+
+    @app.post("/api/game/suggest")
+    def post_suggest():
+        body = request.get_json(silent=True) or {}
+        move_str = body.get("move")
+        tactical_reasoning = body.get("tactical_reasoning")
+        strategic_reasoning = body.get("strategic_reasoning")
+        chat = body.get("chat")
+        if not move_str:
+            return error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
+        if not tactical_reasoning or not strategic_reasoning:
+            return error("'tactical_reasoning' and 'strategic_reasoning' are both required")
+        try:
+            suggestion = game.suggest_move(
+                move_str, tactical_reasoning, strategic_reasoning, chat=chat,
+            )
+        except GameError as e:
+            return error(str(e), 404 if "no game" in str(e) else 400)
+        return jsonify(suggestion=suggestion, state=game.state(**_state_opts(LEAN_STATE)))
 
     @app.post("/api/game/phone-a-friend")
     def post_phone_a_friend():

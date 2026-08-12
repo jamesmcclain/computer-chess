@@ -337,6 +337,16 @@ PAGE = """<!doctype html>
   }
   .resign-side-btn:hover { background: #2a1a1a; }
 
+  /* Shown only while it's a 'centaur' side's turn and it has a pending
+     suggestion (see updateSuggestionUI()) — accepts it verbatim via the
+     same submitMove() path a board click uses. */
+  #accept-suggestion-btn {
+    display: none; all: unset; cursor: pointer; margin-bottom: 0.75rem;
+    font-size: 0.75rem; padding: 0.3rem 0.8rem; border-radius: 999px;
+    background: #1a1a1a; border: 1px solid var(--accent); color: var(--accent);
+  }
+  #accept-suggestion-btn:hover { background: #2a2210; }
+
   /* ---- last-move arrow ----------------------------------------------------
      A semi-transparent arrow drawn from a moved piece's old square to its
      new one — for a move by any side (web user, API user, or engine
@@ -351,6 +361,20 @@ PAGE = """<!doctype html>
   #move-arrow-line.shown { opacity: 0.85; }
   #move-arrow-head { fill: var(--accent); opacity: 0; transition: opacity 0.5s ease; }
   #move-arrow-head.shown { opacity: 0.85; }
+
+  /* ---- centaur suggestion arrow --------------------------------------------
+     Drawn the same way as the last-move arrow above, but dashed and in a
+     different color, so a 'centaur' side's not-yet-played suggestion
+     reads unmistakably as "proposed" rather than "played" — see
+     updateSuggestionUI(). */
+  #suggestion-arrow-line {
+    fill: none; stroke: #6fb0e0; stroke-width: 0.12; stroke-linecap: round;
+    stroke-dasharray: 0.18 0.14; opacity: 0; transition: opacity 0.5s ease;
+  }
+  #suggestion-arrow-line.shown { opacity: 0.85; }
+  #suggestion-arrow-head { fill: #6fb0e0; opacity: 0; transition: opacity 0.5s ease; }
+  #suggestion-arrow-head.shown { opacity: 0.85; }
+  .sq.suggested-from, .sq.suggested-to { box-shadow: inset 0 0 0 3px #6fb0e0; }
 
   /* ---- transcript button -------------------------------------------------
      Shown only while state.game_over is true (and hidden again the moment
@@ -482,6 +506,7 @@ PAGE = """<!doctype html>
     <button id="resign-white-btn" class="resign-side-btn">Resign white</button>
     <button id="resign-black-btn" class="resign-side-btn">Resign black</button>
   </span>
+  <button id="accept-suggestion-btn"></button>
 
   <div id="board-row">
     <div id="eval-bar-wrap" title="">
@@ -511,6 +536,7 @@ const PLAYER_TYPES = [
   { id: "api-trainee", label: "API trainee" },
   { id: "engine", label: "Engine" },
   { id: "web-user", label: "Web user (you)" },
+  { id: "centaur", label: "Centaur (API suggests, you finalize)" },
 ];
 
 const ENGINE_TYPES = [
@@ -542,6 +568,7 @@ const gameControlBtnEl = document.getElementById("game-control-btn");
 const resignBothRowEl = document.getElementById("resign-both-row");
 const resignWhiteBtnEl = document.getElementById("resign-white-btn");
 const resignBlackBtnEl = document.getElementById("resign-black-btn");
+const acceptSuggestionBtnEl = document.getElementById("accept-suggestion-btn");
 const transcriptBtnEl = document.getElementById("transcript-btn");
 const evalBarWrapEl = document.getElementById("eval-bar-wrap");
 const evalBarEl = document.getElementById("eval-bar");
@@ -577,6 +604,17 @@ let moveArrowHeadEl = null;
 let lastArrowLogLength = 0;
 let arrowFadeTimer = null;
 const ARROW_FADE_MS = 60000;
+
+// Centaur suggestion arrow: same idea as the last-move arrow above, but a
+// second pair of elements (also built once in buildBoard()) so a pending
+// suggestion and the actual last move can be shown at once without one
+// overwriting the other. Tracks the suggestion's uci so it only redraws
+// when the suggestion actually changes (see updateSuggestionUI()).
+let suggestionArrowLineEl = null;
+let suggestionArrowHeadEl = null;
+let lastSuggestionUci = null;
+let suggestedFromSq = null;
+let suggestedToSq = null;
 
 // Chat: how many move_log entries have already been rendered into the
 // chat panel, so re-renders only add the entries not yet shown — see
@@ -761,8 +799,17 @@ function buildBoard() {
   moveArrowHeadEl.setAttribute("id", "move-arrow-head");
   svg.appendChild(moveArrowLineEl);
   svg.appendChild(moveArrowHeadEl);
+
+  suggestionArrowLineEl = document.createElementNS(SVG_NS, "line");
+  suggestionArrowLineEl.setAttribute("id", "suggestion-arrow-line");
+  suggestionArrowHeadEl = document.createElementNS(SVG_NS, "polygon");
+  suggestionArrowHeadEl.setAttribute("id", "suggestion-arrow-head");
+  svg.appendChild(suggestionArrowLineEl);
+  svg.appendChild(suggestionArrowHeadEl);
+
   boardEl.appendChild(svg);
   lastArrowLogLength = 0;
+  lastSuggestionUci = null;
   if (arrowFadeTimer) { clearTimeout(arrowFadeTimer); arrowFadeTimer = null; }
 }
 
@@ -803,7 +850,7 @@ function hideMoveArrow() {
   if (arrowFadeTimer) { clearTimeout(arrowFadeTimer); arrowFadeTimer = null; }
 }
 
-function drawMoveArrow(x1, y1, x2, y2) {
+function drawArrowOn(lineEl, headEl, x1, y1, x2, y2) {
   const dx = x2 - x1, dy = y2 - y1;
   const dist = Math.hypot(dx, dy) || 1;
   const ux = dx / dist, uy = dy / dist;
@@ -811,10 +858,10 @@ function drawMoveArrow(x1, y1, x2, y2) {
   // Inset both ends a bit so the line starts clear of the origin piece
   // and stops short of the arrowhead rather than running through it.
   const startInset = 0.15, endInset = 0.42;
-  moveArrowLineEl.setAttribute("x1", x1 + ux * startInset);
-  moveArrowLineEl.setAttribute("y1", y1 + uy * startInset);
-  moveArrowLineEl.setAttribute("x2", x2 - ux * endInset);
-  moveArrowLineEl.setAttribute("y2", y2 - uy * endInset);
+  lineEl.setAttribute("x1", x1 + ux * startInset);
+  lineEl.setAttribute("y1", y1 + uy * startInset);
+  lineEl.setAttribute("x2", x2 - ux * endInset);
+  lineEl.setAttribute("y2", y2 - uy * endInset);
 
   const headLen = 0.32, headWidth = 0.22;
   const tipX = x2 - ux * 0.08, tipY = y2 - uy * 0.08;
@@ -822,10 +869,14 @@ function drawMoveArrow(x1, y1, x2, y2) {
   const px = -uy, py = ux; // perpendicular unit vector, for the arrowhead's base corners
   const p1x = baseX + px * headWidth, p1y = baseY + py * headWidth;
   const p2x = baseX - px * headWidth, p2y = baseY - py * headWidth;
-  moveArrowHeadEl.setAttribute("points", `${tipX},${tipY} ${p1x},${p1y} ${p2x},${p2y}`);
+  headEl.setAttribute("points", `${tipX},${tipY} ${p1x},${p1y} ${p2x},${p2y}`);
 
-  moveArrowLineEl.classList.add("shown");
-  moveArrowHeadEl.classList.add("shown");
+  lineEl.classList.add("shown");
+  headEl.classList.add("shown");
+}
+
+function drawMoveArrow(x1, y1, x2, y2) {
+  drawArrowOn(moveArrowLineEl, moveArrowHeadEl, x1, y1, x2, y2);
 
   // Fade the arrow out if this stays the latest move for a full minute —
   // restarted on every call, so a flurry of moves keeps it visible for
@@ -839,9 +890,62 @@ function drawMoveArrow(x1, y1, x2, y2) {
 }
 
 // ---------------------------------------------------------------------
-// Click-to-move (for a "web-user" side's turn only — an "api-user" or
-// "engine" turn ignores clicks; nothing here changes who can call the
-// REST API directly, this only gates this page's own UI affordance).
+// Centaur suggestion display: a 'centaur' side's pending, not-yet-played
+// suggestion (see game.py's suggest_move()/pending_suggestion) — an arrow
+// distinct from the last-move arrow above (different color, dashed —
+// see the #suggestion-arrow-* CSS), a highlight on its two squares, and
+// an "Accept suggestion" button that plays it verbatim via the same
+// submitMove() path a board click uses. Unlike the last-move arrow this
+// never fades on its own — it disappears only when the suggestion itself
+// is accepted, overridden, or replaced (see updateSuggestionUI()).
+// ---------------------------------------------------------------------
+function updateSuggestionUI(state) {
+  if (!suggestionArrowLineEl) return;
+  const suggestion = state.players[state.turn] === "centaur"
+    ? (state.pending_suggestion && state.pending_suggestion[state.turn]) : null;
+
+  if (!suggestion || !suggestion.uci || suggestion.uci.length < 4) {
+    hideSuggestionArrow();
+    acceptSuggestionBtnEl.style.display = "none";
+    return;
+  }
+
+  if (suggestion.uci !== lastSuggestionUci) {
+    lastSuggestionUci = suggestion.uci;
+    if (suggestedFromSq) suggestedFromSq.classList.remove("suggested-from");
+    if (suggestedToSq) suggestedToSq.classList.remove("suggested-to");
+    const [fr, fc] = squareToRC(suggestion.uci.slice(0, 2));
+    const [tr, tc] = squareToRC(suggestion.uci.slice(2, 4));
+    drawArrowOn(suggestionArrowLineEl, suggestionArrowHeadEl, fc + 0.5, fr + 0.5, tc + 0.5, tr + 0.5);
+    if (cellEls) {
+      suggestedFromSq = cellEls[fr][fc];
+      suggestedToSq = cellEls[tr][tc];
+      suggestedFromSq.classList.add("suggested-from");
+      suggestedToSq.classList.add("suggested-to");
+    }
+  }
+
+  acceptSuggestionBtnEl.style.display = "";
+  acceptSuggestionBtnEl.textContent = "Accept suggestion: " + (suggestion.san || suggestion.uci);
+  acceptSuggestionBtnEl.onclick = () => submitMove(suggestion.uci);
+}
+
+function hideSuggestionArrow() {
+  suggestionArrowLineEl.classList.remove("shown");
+  suggestionArrowHeadEl.classList.remove("shown");
+  if (suggestedFromSq) suggestedFromSq.classList.remove("suggested-from");
+  if (suggestedToSq) suggestedToSq.classList.remove("suggested-to");
+  suggestedFromSq = null;
+  suggestedToSq = null;
+  lastSuggestionUci = null;
+}
+
+// ---------------------------------------------------------------------
+// Click-to-move (for a side a human at this browser finalizes — "web-user"
+// always, "centaur" too since a person here has the final say over its
+// suggestion; an "api-user" or "engine" turn ignores clicks. Nothing here
+// changes who can call the REST API directly, this only gates this page's
+// own UI affordance).
 // ---------------------------------------------------------------------
 function squareName(r, c) {
   // row 0 = rank 8 (see game.py's _board_grid), column 0 = file a.
@@ -854,8 +958,9 @@ function squareToRC(square) {
   return [8 - rank, FILES.indexOf(file)];
 }
 
-function myTurnIsWebUser(state) {
-  return !!(state && state.started && !state.game_over && state.players[state.turn] === "web-user");
+function myTurnIsHumanFinalized(state) {
+  return !!(state && state.started && !state.game_over &&
+            (state.players[state.turn] === "web-user" || state.players[state.turn] === "centaur"));
 }
 
 function clearSelection() {
@@ -872,9 +977,9 @@ function clearSelection() {
 }
 
 function updateInteractivity(state) {
-  boardEl.classList.toggle("interactive", myTurnIsWebUser(state));
+  boardEl.classList.toggle("interactive", myTurnIsHumanFinalized(state));
   if (!cellEls) return;
-  const canMove = myTurnIsWebUser(state);
+  const canMove = myTurnIsHumanFinalized(state);
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       const cell = state.started ? state.board[r][c] : null;
@@ -885,7 +990,7 @@ function updateInteractivity(state) {
 }
 
 async function onSquareClick(r, c) {
-  if (!myTurnIsWebUser(latestState)) return;
+  if (!myTurnIsHumanFinalized(latestState)) return;
   const sq = squareName(r, c);
   const cell = latestState.board[r][c];
   const sideToMove = latestState.turn;
@@ -1023,10 +1128,13 @@ function render(state) {
     lastCodes = null;
     moveArrowLineEl = null;
     moveArrowHeadEl = null;
+    suggestionArrowLineEl = null;
+    suggestionArrowHeadEl = null;
     boardWrapEl.style.display = "none";
     evalBarWrapEl.style.display = "none";
     playersBarEl.style.display = "none";
     gameControlBtnEl.style.display = "none";
+    acceptSuggestionBtnEl.style.display = "none";
     chatPanelEl.style.display = "none";
     chatInputRowEl.style.display = "none";
     chatLogEl.innerHTML = "";
@@ -1053,10 +1161,15 @@ function render(state) {
   }
   updateInteractivity(state);
   updateMoveArrow(state);
+  updateSuggestionUI(state);
   updatePlayersBar(state);
   updateGameControls(state);
   updateChatPanel(state);
   updateChatInput(state);
+
+  const centaurSuggestion = state.players[state.turn] === "centaur"
+    ? (state.pending_suggestion && state.pending_suggestion[state.turn]) : null;
+  const centaurWaiting = state.players[state.turn] === "centaur" && !centaurSuggestion;
 
   let text = (state.turn === "white" ? "White" : "Black") + " to move";
   statusEl.className = "";
@@ -1067,7 +1180,11 @@ function render(state) {
     statusEl.className = "over";
   } else if (state.in_check) {
     text += " \\u2014 check!";
-  } else if (myTurnIsWebUser(state)) {
+  } else if (centaurWaiting) {
+    text += " \\u2014 waiting for a suggestion from the API";
+  } else if (centaurSuggestion) {
+    text += " \\u2014 a suggestion is ready: accept it or play your own move";
+  } else if (myTurnIsHumanFinalized(state)) {
     text += " \\u2014 your move: click a piece, then a highlighted square";
   }
   statusEl.textContent = text;
@@ -1183,7 +1300,7 @@ function updateChatPanel(state) {
 // actually go out.
 // ---------------------------------------------------------------------
 function updateChatInput(state) {
-  const show = state.started && !state.game_over && myTurnIsWebUser(state);
+  const show = state.started && !state.game_over && myTurnIsHumanFinalized(state);
   chatInputRowEl.style.display = show ? "flex" : "none";
 }
 
@@ -1757,7 +1874,7 @@ def create_viewer_app(game):
         if not move_str:
             return _error("'move' is required (UCI, e.g. 'e2e4', or SAN, e.g. 'e4')")
         try:
-            player_move, engine_move = game.make_move(move_str, chat=chat)
+            player_move, engine_move = game.make_move(move_str, chat=chat, source="web")
         except GameError as e:
             return _error(str(e))
         if player_move.get("forfeited"):

@@ -126,7 +126,7 @@ EVAL_QUALITY_DESCRIPTIONS = {
 }
 DEFAULT_EVAL_QUALITY = "balanced"
 
-# A side is one of four types:
+# A side is one of five types:
 #   "api-user"    — moves come from the REST API (port 5003), e.g. an agent or curl.
 #   "api-trainee" — exactly like "api-user" (same REST API), except every
 #                   move must be preceded by a phone-a-friend call (if any
@@ -141,6 +141,18 @@ DEFAULT_EVAL_QUALITY = "balanced"
 #                   browser viewer (port 5004).
 #   "engine"      — one of ENGINE_NAMES plays this side automatically; which
 #                   one is a separate, per-side choice (see engine_names).
+#   "centaur"     — "centaur chess": the REST API can only *suggest* a move
+#                   for this side (POST /api/game/suggest, carrying both
+#                   `tactical_reasoning` and `strategic_reasoning`, same as
+#                   "api-trainee") — it is stored as pending_suggestion and
+#                   never touches the board. Only a person at the browser
+#                   viewer can actually finalize the side's move, by either
+#                   accepting the suggestion as-is or playing any other
+#                   legal move instead (see make_move()'s `source` check).
+#                   Unlike "api-trainee", a suggestion missing either
+#                   reasoning field is simply rejected (400, retryable) —
+#                   not a forfeit, since nothing has been committed to the
+#                   board yet.
 # "api-user", "api-trainee", and "web-user" all behave identically to the
 # game itself (each is just "a move shows up for this side eventually");
 # the distinction only matters for display (the "by" field on a move, and
@@ -148,8 +160,10 @@ DEFAULT_EVAL_QUALITY = "balanced"
 # on) and, for "api-trainee" only, the extra requirements above. Both
 # sides can be "engine" — the two engines then play each other
 # automatically, one side tuned to each side's own difficulty level and
-# engine choice (see ChessGame._start_autoplay).
-PLAYER_TYPES = ("api-user", "api-trainee", "web-user", "engine")
+# engine choice (see ChessGame._start_autoplay). "centaur" is the odd one
+# out: it never moves the board directly at all — see make_move()/
+# suggest_move() and pending_suggestion below.
+PLAYER_TYPES = ("api-user", "api-trainee", "web-user", "engine", "centaur")
 
 # Player types that get to use phone-a-friend / must satisfy "api-trainee"'s
 # extra requirements the same way "api-user" does — i.e. every place that
@@ -220,7 +234,7 @@ TERMINATION_LABELS = {
 # the raw PLAYER_TYPES string. An "engine" side's fallback is looked up
 # from ENGINE_DISPLAY_NAMES instead (see transcript()), since which
 # engine it is matters more than the generic "engine" type string.
-TYPE_LABELS = {"api-user": "API user", "api-trainee": "API trainee", "web-user": "Web user"}
+TYPE_LABELS = {"api-user": "API user", "api-trainee": "API trainee", "web-user": "Web user", "centaur": "Centaur"}
 
 # Bounds for GET /api/game/wait's blocking wait — see ChessGame.wait_for_turn.
 # The cap keeps a single request from tying up a server thread indefinitely
@@ -410,6 +424,13 @@ class ChessGame:
         self.forfeited_by = None     # "white" | "black" — see make_move()'s trainee check
         self.move_log = []           # [{"ply","color","uci","san","by","name","chat","ts"}, ...]
         self.created_at = None
+        # A "centaur" side's not-yet-played suggestion, per color — see
+        # PLAYER_TYPES above and suggest_move()/make_move(). Set by
+        # suggest_move() (each call overwrites whatever was there before),
+        # cleared to None the moment a move is actually made for that color
+        # (accepted or overridden — see make_move()) or the game ends.
+        # Reset every new_game().
+        self.pending_suggestion = {"white": None, "black": None}
         # Ply an "api-trainee" side last called phone_a_friend() for (see
         # phone_a_friend() and make_move()'s trainee-requirements check) —
         # {"white": ply, "black": ply}, absent for a color that hasn't
@@ -644,6 +665,7 @@ class ChessGame:
             self.move_log = []
             self._reasoning_log = []
             self._eval_log = []
+            self.pending_suggestion = {"white": None, "black": None}
             self.created_at = time.time()
             self._generation += 1
             generation = self._generation
@@ -1306,7 +1328,13 @@ class ChessGame:
         _friend_summary_compact_locked(), for API callers). The field
         itself is always present either way — never omitted, whatever
         the usage, since an 'api-trainee' side has to read it before
-        every move."""
+        every move.
+
+        'pending_suggestion' ({"white": ..., "black": ...}, each None or
+        a suggestion dict — see suggest_move()) is always present too:
+        it's the only way the board viewer learns a 'centaur' side has a
+        move waiting to be accepted or overridden, and it's small enough
+        (at most one non-None entry at a time) not to be worth gating."""
         with self._lock:
             board = self.board
             status = self._status()
@@ -1326,6 +1354,7 @@ class ChessGame:
                 "fullmove_number": board.fullmove_number,
                 "halfmove_clock": board.halfmove_clock,
                 "last_move": self.move_log[-1] if self.move_log else None,
+                "pending_suggestion": dict(self.pending_suggestion),
             }
             if include_board_grid:
                 result["board"] = self._board_grid()
@@ -1362,11 +1391,19 @@ class ChessGame:
                 })
             return moves
 
-    def make_move(self, move_str, chat=None, tactical_reasoning=None, strategic_reasoning=None):
+    def make_move(self, move_str, chat=None, tactical_reasoning=None, strategic_reasoning=None,
+                  source="web"):
         """Submit a move for whichever side is currently to move — works
         the same whether that side is 'api-user', 'api-trainee', or
         'web-user'; only 'engine' turns are rejected here (an engine
-        moves itself).
+        moves itself). A 'centaur' turn is also rejected here unless
+        `source="web"` (the default) — see the `source` param below.
+
+        `source` ("api" or "web") says which app is making this call:
+        api.py always passes "api", viewer.py always passes "web". It
+        only matters for a 'centaur' side, which may not be finalized by
+        the REST API directly — see PLAYER_TYPES above. For every other
+        player type it has no effect at all.
 
         `chat` (optional) is a short chat line attached to this move —
         it and this side's current display name (see set_name()) are
@@ -1411,8 +1448,15 @@ class ChessGame:
             mover_type = self._current_player_type()
             if mover_type == "engine":
                 raise GameError("it is the engine's turn; wait for its move")
+            if mover_type == "centaur" and source != "web":
+                raise GameError(
+                    "it is a 'centaur' side's turn; the API cannot move directly for "
+                    "a centaur side — use POST /api/game/suggest to suggest a move "
+                    "for the human at the board to accept or override"
+                )
 
             color = "white" if self.board.turn == chess.WHITE else "black"
+            suggestion = self.pending_suggestion.get(color)
             pending_ply = len(self.move_log) + 1
             clean_tactical = self._clean_text(tactical_reasoning, REASONING_MAX_LEN)
             clean_strategic = self._clean_text(strategic_reasoning, REASONING_MAX_LEN)
@@ -1440,16 +1484,31 @@ class ChessGame:
             player_entry = {"ply": ply, "color": color, "uci": uci, "san": san,
                               "by": mover_type, "name": self.player_names.get(color),
                               "ts": time.time()}
+            if mover_type == "centaur":
+                player_entry["suggestion_followed"] = bool(suggestion and suggestion["uci"] == uci)
             clean_chat = self._clean_text(chat, CHAT_MAX_LEN)
             if clean_chat is not None:
                 player_entry["chat"] = clean_chat
             self.move_log.append(player_entry)
+            self.pending_suggestion[color] = None
 
             if clean_tactical is not None or clean_strategic is not None:
                 self._reasoning_log.append({
                     "ply": ply, "color": color,
                     "tactical_reasoning": clean_tactical,
                     "strategic_reasoning": clean_strategic,
+                    "ts": time.time(),
+                })
+            elif mover_type == "centaur" and suggestion and suggestion["uci"] == uci:
+                # The human accepted the suggestion as-is — carry its
+                # reasoning into the same hidden-until-transcript() log an
+                # 'api-trainee' move uses. An overridden suggestion's
+                # reasoning describes a move that was never played, so it
+                # is simply dropped, not logged.
+                self._reasoning_log.append({
+                    "ply": ply, "color": color,
+                    "tactical_reasoning": suggestion["tactical_reasoning"],
+                    "strategic_reasoning": suggestion["strategic_reasoning"],
                     "ts": time.time(),
                 })
 
@@ -1460,6 +1519,59 @@ class ChessGame:
             self._trigger_eval_locked()
             self._bump_version_locked()
             return player_entry, engine_entry
+
+    def suggest_move(self, move_str, tactical_reasoning, strategic_reasoning, chat=None):
+        """Suggest a move for a 'centaur' side to move — see PLAYER_TYPES
+        above. Unlike make_move(), this never touches the board: the move
+        is only parsed for legality, then stored as
+        self.pending_suggestion[color], overwriting whatever was pending
+        there before. It is up to a person at the board viewer to
+        actually play it (see make_move()'s `source` check) — either by
+        submitting this exact move or any other legal one instead.
+
+        `tactical_reasoning` and `strategic_reasoning` are both required
+        (unlike make_move(), where they're optional except for
+        'api-trainee') — a suggestion with either missing or blank is
+        rejected outright (GameError, no state change, retryable). This
+        is deliberately a plain rejection, not the forfeit an
+        'api-trainee' incurs for the same omission: nothing has been
+        committed to the board yet, so there is no wasted ply to punish.
+
+        `chat` (optional) is carried along on the stored suggestion for
+        the human to read before deciding, same as make_move()'s `chat`.
+
+        Returns a copy of the stored suggestion dict."""
+        with self._lock:
+            if not self.started:
+                raise GameError("no game in progress; POST /api/game to start one")
+            if self._status() != "in_progress":
+                raise GameError(f"game is not in progress (status: {self._status()})")
+            mover_type = self._current_player_type()
+            if mover_type != "centaur":
+                raise GameError("it is not a 'centaur' side's turn; only a centaur side can suggest a move")
+
+            clean_tactical = self._clean_text(tactical_reasoning, REASONING_MAX_LEN)
+            clean_strategic = self._clean_text(strategic_reasoning, REASONING_MAX_LEN)
+            if clean_tactical is None or clean_strategic is None:
+                raise GameError("'tactical_reasoning' and 'strategic_reasoning' are both required for a centaur suggestion")
+
+            color = "white" if self.board.turn == chess.WHITE else "black"
+            move = self._parse_move(move_str)
+            suggestion = {
+                "uci": move.uci(),
+                "san": self.board.san(move),
+                "by": "centaur",
+                "name": self.player_names.get(color),
+                "ts": time.time(),
+                "tactical_reasoning": clean_tactical,
+                "strategic_reasoning": clean_strategic,
+            }
+            clean_chat = self._clean_text(chat, CHAT_MAX_LEN)
+            if clean_chat is not None:
+                suggestion["chat"] = clean_chat
+            self.pending_suggestion[color] = suggestion
+            self._bump_version_locked()
+            return dict(suggestion)
 
     def analysis(self, color=None):
         """Derived tactical facts about the current position, for the
@@ -1771,6 +1883,7 @@ class ChessGame:
                 raise GameError(f"game is not in progress (status: {self._status()})")
             self.result_reason = "resigned"
             self.resigned_by = player
+            self.pending_suggestion = {"white": None, "black": None}
             self._bump_version_locked()
             return self.state(include_eval=include_eval, **(state_opts or {}))
 
@@ -1793,6 +1906,7 @@ class ChessGame:
             if self._status() != "in_progress":
                 raise GameError(f"game is not in progress (status: {self._status()})")
             self.result_reason = "aborted"
+            self.pending_suggestion = {"white": None, "black": None}
             self._bump_version_locked()
             return self.state(include_eval=include_eval, **(state_opts or {}))
 
