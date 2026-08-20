@@ -355,12 +355,13 @@ PAGE = """<!doctype html>
      SVG with viewBox="0 0 8 8" (one unit per square) laid over the board,
      so it scales with the board automatically — no JS resize math needed,
      unlike the pixel-based board sizing above. Fades out on its own after
-     ARROW_FADE_MS if no further move arrives — see updateMoveArrow(). */
+     ARROW_FADE_MS if no further move arrives — see updateMoveArrow().
+     White and black each have their own SVG pair and fade clock. */
   #move-arrow { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-  #move-arrow-line { fill: none; stroke: var(--accent); stroke-width: 0.14; stroke-linecap: round; opacity: 0; transition: opacity 0.5s ease; }
-  #move-arrow-line.shown { opacity: 0.85; }
-  #move-arrow-head { fill: var(--accent); opacity: 0; transition: opacity 0.5s ease; }
-  #move-arrow-head.shown { opacity: 0.85; }
+  #white-move-arrow-line, #black-move-arrow-line { fill: none; stroke: var(--accent); stroke-width: 0.14; stroke-linecap: round; opacity: 0; transition: opacity 0.5s ease; }
+  #white-move-arrow-line.shown, #black-move-arrow-line.shown { opacity: 0.85; }
+  #white-move-arrow-head, #black-move-arrow-head { fill: var(--accent); opacity: 0; transition: opacity 0.5s ease; }
+  #white-move-arrow-head.shown, #black-move-arrow-head.shown { opacity: 0.85; }
 
   /* ---- centaur suggestion arrow --------------------------------------------
      Drawn the same way as the last-move arrow above, but dashed and in a
@@ -593,17 +594,19 @@ let latestState = null; // most recent state from render(), used by click-to-mov
 let selectedSquare = null;
 let legalTargets = {};
 
-// Last-move arrow: line + arrowhead elements (built once in buildBoard(),
-// since it clears #board's contents), how many move_log entries were on
-// the board the last time the arrow was drawn — a length change means
-// there's a new last move to point at (see updateMoveArrow()) — and the
-// pending fade-out timer, restarted on every new move so the arrow always
-// shows for a full ARROW_FADE_MS after the *latest* move, not the first.
-let moveArrowLineEl = null;
-let moveArrowHeadEl = null;
-let lastArrowLogLength = 0;
-let arrowFadeTimer = null;
+// Last-move arrows: one SVG pair and one fade clock per side.
+// Own move sets that side's remaining to ARROW_FADE_MS. Opponent move
+// sets the other side's remaining to min(PREV_ARROW_FADE_MS, leftover).
+// Each clock ticks from lastEventAt until remaining hits zero.
 const ARROW_FADE_MS = 60000;
+const PREV_ARROW_FADE_MS = 5000;
+const moveArrowEls = {
+  white: { line: null, head: null },
+  black: { line: null, head: null },
+};
+let arrowClocks = { white: null, black: null };
+let arrowFadeTimers = { white: null, black: null };
+let lastArrowLogLength = 0;
 
 // Centaur suggestion arrow: same idea as the last-move arrow above, but a
 // second pair of elements (also built once in buildBoard()) so a pending
@@ -793,12 +796,15 @@ function buildBoard() {
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("id", "move-arrow");
   svg.setAttribute("viewBox", "0 0 8 8");
-  moveArrowLineEl = document.createElementNS(SVG_NS, "line");
-  moveArrowLineEl.setAttribute("id", "move-arrow-line");
-  moveArrowHeadEl = document.createElementNS(SVG_NS, "polygon");
-  moveArrowHeadEl.setAttribute("id", "move-arrow-head");
-  svg.appendChild(moveArrowLineEl);
-  svg.appendChild(moveArrowHeadEl);
+  for (const side of ["white", "black"]) {
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("id", side + "-move-arrow-line");
+    const head = document.createElementNS(SVG_NS, "polygon");
+    head.setAttribute("id", side + "-move-arrow-head");
+    svg.appendChild(line);
+    svg.appendChild(head);
+    moveArrowEls[side] = { line, head };
+  }
 
   suggestionArrowLineEl = document.createElementNS(SVG_NS, "line");
   suggestionArrowLineEl.setAttribute("id", "suggestion-arrow-line");
@@ -810,7 +816,7 @@ function buildBoard() {
   boardEl.appendChild(svg);
   lastArrowLogLength = 0;
   lastSuggestionUci = null;
-  if (arrowFadeTimer) { clearTimeout(arrowFadeTimer); arrowFadeTimer = null; }
+  resetArrowClocks();
 }
 
 // ---------------------------------------------------------------------
@@ -820,34 +826,98 @@ function buildBoard() {
 // new square). Only redraws when move_log actually grew, so it doesn't
 // re-animate on unrelated state pushes (e.g. someone else's chat message).
 // ---------------------------------------------------------------------
+function otherArrowSide(side) {
+  return side === "white" ? "black" : "white";
+}
+
+function arrowRemainingAt(clock, now) {
+  if (!clock || clock.capMs == null) return 0;
+  return Math.max(0, clock.capMs - (now - clock.lastEventAt));
+}
+
+function applyOwnMoveToClocks(clocks, side, now) {
+  const next = {
+    white: clocks.white ? { lastEventAt: clocks.white.lastEventAt, capMs: clocks.white.capMs } : null,
+    black: clocks.black ? { lastEventAt: clocks.black.lastEventAt, capMs: clocks.black.capMs } : null,
+  };
+  const opp = otherArrowSide(side);
+  if (next[opp]) {
+    const rem = arrowRemainingAt(next[opp], now);
+    next[opp] = { lastEventAt: now, capMs: Math.min(PREV_ARROW_FADE_MS, rem) };
+  }
+  next[side] = { lastEventAt: now, capMs: ARROW_FADE_MS };
+  return next;
+}
+
+function hideSideArrow(side) {
+  const els = moveArrowEls[side];
+  if (els.line) els.line.classList.remove("shown");
+  if (els.head) els.head.classList.remove("shown");
+  if (arrowFadeTimers[side]) {
+    clearTimeout(arrowFadeTimers[side]);
+    arrowFadeTimers[side] = null;
+  }
+}
+
+function resetArrowClocks() {
+  hideSideArrow("white");
+  hideSideArrow("black");
+  arrowClocks = { white: null, black: null };
+}
+
+function scheduleSideArrowFade(side) {
+  if (arrowFadeTimers[side]) clearTimeout(arrowFadeTimers[side]);
+  const rem = arrowRemainingAt(arrowClocks[side], Date.now());
+  if (rem <= 0) {
+    hideSideArrow(side);
+    return;
+  }
+  arrowFadeTimers[side] = setTimeout(() => {
+    hideSideArrow(side);
+  }, rem);
+}
+
 function updateMoveArrow(state) {
   const log = (state && state.move_log) || [];
-  if (!moveArrowLineEl) return;
+  if (!moveArrowEls.white.line) return;
   if (!state || !state.started || log.length === 0) {
-    hideMoveArrow();
+    resetArrowClocks();
     lastArrowLogLength = 0;
     return;
   }
   if (log.length === lastArrowLogLength) return;
+  if (log.length < lastArrowLogLength) {
+    // A new game started with a shorter log than the one we were tracking.
+    resetArrowClocks();
+    lastArrowLogLength = 0;
+  }
+  // The push that delivers this state can bundle more than one new move
+  // (e.g. an engine replying fast enough that two moves land between one
+  // SSE event and the next), so replay every new entry through the clock
+  // cascade in order — not just the last one — or an intermediate move's
+  // capping-the-other-side effect gets silently dropped.
+  const newMoves = log.slice(lastArrowLogLength);
   lastArrowLogLength = log.length;
 
-  const last = log[log.length - 1];
-  if (!last.uci || last.uci.length < 4) {
-    hideMoveArrow();
-    return;
+  // Draw an arrow for EVERY move in the batch, not just the last one — a
+  // web-user's move and the engine's near-instant reply routinely land in
+  // the same push (the engine can reply in well under a second), so if we
+  // only drew the batch's final mover, the human's own side would never
+  // get an arrow at all.
+  const now = Date.now();
+  for (const mv of newMoves) {
+    const mvSide = mv.color === "black" ? "black" : "white";
+    if (!mv.uci || mv.uci.length < 4) {
+      hideSideArrow(mvSide);
+      continue;
+    }
+    arrowClocks = applyOwnMoveToClocks(arrowClocks, mvSide, now);
+    const [fr, fc] = squareToRC(mv.uci.slice(0, 2));
+    const [tr, tc] = squareToRC(mv.uci.slice(2, 4));
+    drawArrowOn(moveArrowEls[mvSide].line, moveArrowEls[mvSide].head, fc + 0.5, fr + 0.5, tc + 0.5, tr + 0.5);
   }
-  const [fr, fc] = squareToRC(last.uci.slice(0, 2));
-  const [tr, tc] = squareToRC(last.uci.slice(2, 4));
-  // Drawn the same way regardless of who made the move — 'by' is not
-  // checked here — so an engine's move or another API user's move gets
-  // the same clear arrow as one made by a person clicking the board.
-  drawMoveArrow(fc + 0.5, fr + 0.5, tc + 0.5, tr + 0.5);
-}
-
-function hideMoveArrow() {
-  moveArrowLineEl.classList.remove("shown");
-  moveArrowHeadEl.classList.remove("shown");
-  if (arrowFadeTimer) { clearTimeout(arrowFadeTimer); arrowFadeTimer = null; }
+  scheduleSideArrowFade("white");
+  scheduleSideArrowFade("black");
 }
 
 function drawArrowOn(lineEl, headEl, x1, y1, x2, y2) {
@@ -873,20 +943,6 @@ function drawArrowOn(lineEl, headEl, x1, y1, x2, y2) {
 
   lineEl.classList.add("shown");
   headEl.classList.add("shown");
-}
-
-function drawMoveArrow(x1, y1, x2, y2) {
-  drawArrowOn(moveArrowLineEl, moveArrowHeadEl, x1, y1, x2, y2);
-
-  // Fade the arrow out if this stays the latest move for a full minute —
-  // restarted on every call, so a flurry of moves keeps it visible for
-  // ARROW_FADE_MS after the *last* one, not the first.
-  if (arrowFadeTimer) clearTimeout(arrowFadeTimer);
-  arrowFadeTimer = setTimeout(() => {
-    moveArrowLineEl.classList.remove("shown");
-    moveArrowHeadEl.classList.remove("shown");
-    arrowFadeTimer = null;
-  }, ARROW_FADE_MS);
 }
 
 // ---------------------------------------------------------------------
@@ -1126,8 +1182,9 @@ function render(state) {
     boardEl.innerHTML = "";
     cellEls = null;
     lastCodes = null;
-    moveArrowLineEl = null;
-    moveArrowHeadEl = null;
+    moveArrowEls.white = { line: null, head: null };
+    moveArrowEls.black = { line: null, head: null };
+    resetArrowClocks();
     suggestionArrowLineEl = null;
     suggestionArrowHeadEl = null;
     boardWrapEl.style.display = "none";

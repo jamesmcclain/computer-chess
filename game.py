@@ -1516,13 +1516,42 @@ class ChessGame:
                     "ts": time.time(),
                 })
 
-            engine_entry = None
-            if self._status() == "in_progress" and self._current_player_type() == "engine":
-                engine_entry = self._play_engine_move_locked()
-
+            engine_up_next = self._status() == "in_progress" and self._current_player_type() == "engine"
             self._trigger_eval_locked()
             self._bump_version_locked()
-            return player_entry, engine_entry
+            generation = self._generation
+
+        # Bumping the version above (and releasing self._lock by exiting the
+        # `with` block here) wakes anyone blocked in wait_for_change() —
+        # including the mover's own SSE connection — with this move already
+        # applied, before asking the engine for its reply below. Without
+        # this split, a slow engine (e.g. a high Stockfish level) would
+        # leave the board looking frozen, with no sign this move was even
+        # accepted, for as long as the engine takes to think: the lock
+        # guarding move_log was held for the engine's turn too, so nothing
+        # could observe the state change until both moves were in.
+        engine_entry = None
+        if engine_up_next:
+            # Releasing self._lock above only makes a notified waiter
+            # *eligible* to run; nothing stops this same thread from
+            # immediately winning the reacquire race below and starving it
+            # out before it ever gets scheduled. A tiny sleep forces an
+            # actual handoff, giving a woken wait_for_change() call (in
+            # particular the mover's own SSE connection) a real chance to
+            # observe this move on its own, before the engine's reply lands
+            # on top of it.
+            time.sleep(0.05)
+            with self._lock:
+                # Re-check: the lock was released above, so a new game
+                # (new_game() bumps self._generation) or a resignation/abort
+                # could have landed in the meantime.
+                if self._generation == generation and self._status() == "in_progress" \
+                        and self._current_player_type() == "engine":
+                    engine_entry = self._play_engine_move_locked()
+                    self._trigger_eval_locked()
+                    self._bump_version_locked()
+
+        return player_entry, engine_entry
 
     def suggest_move(self, move_str, tactical_reasoning, strategic_reasoning, chat=None):
         """Suggest a move for a 'centaur' side to move — see PLAYER_TYPES
